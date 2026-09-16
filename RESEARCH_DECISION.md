@@ -310,3 +310,13 @@ REEVAL_METHODS='pgt' bash scripts/reeval_all_checkpoints_b200.sh
 
 The final evaluation command in `eval_all_b200.sh` keeps PGT opt-in via
 `RUN_PGT_EVAL=true`, so existing OPD/TA/RAC workflows remain compatible.
+
+## 9. SNIG-OPD extension in Bellman2
+
+This copied repository adds SNIG-OPD as an opt-in method only under
+`/mnt/hdd/nhatminh/OPD/Bellman2`, based on
+`SNIG_OPD_implementation_plan_v2.md`. The original PGT/CMT research record above
+is preserved. SNIG keeps the support-matched local PGT geometry on the normalized
+Top-K union and uses a bounded truncated common-mass successor kernel for the
+sequential marginal. Its KL-constrained allocator and diagnostics are implemented
+as a separate selector path; the original `BellmanOPD` tree is unchanged.

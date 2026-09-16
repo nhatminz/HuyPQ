@@ -30,6 +30,7 @@ METHODS = (
     ("rac", "Bellman-RAC", "rac_opd"),
     ("pgt", "PGT", "pgt_opd"),
     ("cmt", "CMT-OPD", "cmt_opd"),
+    ("snig", "SNIG-OPD", "snig_opd"),
     ("grpo", "GRPO", "grpo"),
     ("iw", "IW-OPD", "iw"),
 )
@@ -767,7 +768,7 @@ def _reevaluate_method(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Re-evaluate every saved checkpoint for selected OPD/TA-OPD/RAC/PGT "
+            "Re-evaluate every saved checkpoint for selected OPD/TA-OPD/RAC/PGT/CMT/SNIG "
             "methods and replace their periodic-evaluation histories"
         )
     )
@@ -783,6 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rac-output")
     parser.add_argument("--pgt-output")
     parser.add_argument("--cmt-output")
+    parser.add_argument("--snig-output")
     parser.add_argument("--grpo-output")
     parser.add_argument("--iw-output")
     parser.add_argument("--temperature", type=float, default=0.7)
@@ -838,6 +840,7 @@ def main(argv: list[str] | None = None) -> int:
         "rac": args.rac_output,
         "pgt": args.pgt_output,
         "cmt": args.cmt_output,
+        "snig": args.snig_output,
         "grpo": args.grpo_output,
         "iw": args.iw_output,
     }

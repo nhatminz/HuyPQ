@@ -150,6 +150,28 @@ class SelectorLoggingTests(unittest.TestCase):
             self.assertEqual(set(payload["scores"]), set(keys))
             self.assertEqual(payload["scores"]["learning_value"]["count"], 9)
 
+    def test_compact_snig_stats_include_all_successor_fields_and_allocation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            keys = (
+                "s_SNIG", "gain", "transition_weight", "support_common_mass",
+                "R", "M", "R_next", "M_next", "Phi", "successor_utility",
+                "learning_value", "w",
+            )
+            diagnostics = {key: torch.linspace(0, 1, 9) for key in keys}
+            diagnostics.update(
+                allocation_kl_epsilon=0.5,
+                allocation_kl_achieved=0.5,
+                allocation_inverse_temperature=2.0,
+                allocation_temperature=0.5,
+                successor_lambda=1.0,
+                successor_share=0.02,
+            )
+            logger = TokenScoreStatsLogger(temporary, "snig", interval=10, bins=5)
+            path = logger.write(1, 10, diagnostics)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(payload["scores"]), set(keys))
+            self.assertEqual(payload["allocation"]["successor_share"], 0.02)
+
 
 if __name__ == "__main__":
     unittest.main()

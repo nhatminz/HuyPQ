@@ -39,6 +39,7 @@ export PGT_RUN_NAME="${PGT_RUN_NAME:-pgt_${RUN_TIMESTAMP}}"
 export CMT_RUN_NAME="${CMT_RUN_NAME:-cmt_${RUN_TIMESTAMP}}"
 export GRPO_RUN_NAME="${GRPO_RUN_NAME:-grpo_${RUN_TIMESTAMP}}"
 export IW_RUN_NAME="${IW_RUN_NAME:-iw_${RUN_TIMESTAMP}}"
+export SNIG_RUN_NAME="${SNIG_RUN_NAME:-snig_${RUN_TIMESTAMP}}"
 export RUN_NAME="${RUN_NAME:-comparison_${RUN_TIMESTAMP}}"
 # Shared GLOBAL rollout/micro-batch for all methods. Changing the visible GPU
 # count changes only the per-GPU shard; it does not change optimizer semantics.
@@ -59,9 +60,13 @@ export RUN_PGT_TRAIN="${RUN_PGT_TRAIN:-false}"
 export RUN_CMT_TRAIN="${RUN_CMT_TRAIN:-false}"
 export RUN_GRPO_TRAIN="${RUN_GRPO_TRAIN:-false}"
 export RUN_IW_TRAIN="${RUN_IW_TRAIN:-false}"
+export RUN_SNIG_TRAIN="${RUN_SNIG_TRAIN:-false}"
 export CMT_ALLOCATION_KL="${CMT_ALLOCATION_KL:-0.5}"
 export CMT_GAMMA="${CMT_GAMMA:-1.0}"
 export CMT_SUCCESSOR_LAMBDA="${CMT_SUCCESSOR_LAMBDA:-1.0}"
+export SNIG_ALLOCATION_KL="${SNIG_ALLOCATION_KL:-0.5}"
+export SNIG_GAMMA="${SNIG_GAMMA:-1.0}"
+export SNIG_SUCCESSOR_LAMBDA="${SNIG_SUCCESSOR_LAMBDA:-1.0}"
 export MAX_PROMPT_LEN="${MAX_PROMPT_LENGTH:-${MAX_PROMPT_LEN:-1024}}"
 export OVERLONG_PROMPT_POLICY="${OVERLONG_PROMPT_POLICY:-filter}"
 export MAX_RESPONSE_LEN="${MAX_RESPONSE_LENGTH:-${MAX_RESPONSE_LEN:-${MAX_NEW_TOKENS:-7168}}}"
@@ -167,5 +172,15 @@ if [[ "${RUN_IW_TRAIN}" == "true" ]]; then
     RESUME_FROM_CHECKPOINT="${IW_RESUME_FROM_CHECKPOINT:-}" \
     bash "${SCRIPT_DIR}/train_iw_b200.sh"
 fi
-echo "Baseline runs finished. PGT trained: ${RUN_PGT_TRAIN}; CMT trained: ${RUN_CMT_TRAIN}; GRPO trained: ${RUN_GRPO_TRAIN}; IW trained: ${RUN_IW_TRAIN}. Plot explicitly with:"
-echo "PLOT_METHODS='opd ta cmt grpo iw' bash scripts/plot_training_progress.sh"
+if [[ "${RUN_SNIG_TRAIN}" == "true" ]]; then
+  RUN_NAME="${SNIG_RUN_NAME}" OUTPUT_DIR="${SNIG_RUN_OUTPUT}" \
+    STUDENT_MODEL="${STUDENT_MODEL}" TEACHER_MODEL="${TEACHER_MODEL}" \
+    TRAIN_DATA="${TRAIN_DATA}" PROMPT_KEY="${PROMPT_KEY}" \
+    SNIG_ALLOCATION_KL="${SNIG_ALLOCATION_KL}" \
+    SNIG_GAMMA="${SNIG_GAMMA}" \
+    SNIG_SUCCESSOR_LAMBDA="${SNIG_SUCCESSOR_LAMBDA}" \
+    RESUME_FROM_CHECKPOINT="${SNIG_RESUME_FROM_CHECKPOINT:-}" \
+    bash "${SCRIPT_DIR}/train_snig_b200.sh"
+fi
+echo "Baseline runs finished. PGT trained: ${RUN_PGT_TRAIN}; CMT trained: ${RUN_CMT_TRAIN}; GRPO trained: ${RUN_GRPO_TRAIN}; IW trained: ${RUN_IW_TRAIN}; SNIG trained: ${RUN_SNIG_TRAIN}. Plot explicitly with:"
+echo "PLOT_METHODS='opd ta cmt snig grpo iw' bash scripts/plot_training_progress.sh"

@@ -115,6 +115,7 @@ from .selectors import (
     OPDSelector,
     PGTSelector,
     RACSelector,
+    SNIGSelector,
     TASelector,
     kl_constrained_allocation,
     top_budget_mask,
@@ -135,6 +136,7 @@ METHOD_DISPLAY_NAMES = {
     "rac": "Bellman-RAC",
     "pgt": "PGT",
     "cmt": "CMT-OPD",
+    "snig": "SNIG-OPD",
     "grpo": "GRPO",
     "iw": "IW-OPD",
 }
@@ -438,6 +440,88 @@ def _globalize_cmt_output(
     return SelectorOutput(diagnostics["w"], diagnostics), gathered, start, end
 
 
+def _globalize_snig_output(
+    local: PGTOutput,
+    valid_mask: torch.Tensor,
+    epsilon: float,
+    successor_lambda: float,
+    distributed: DistributedContext,
+) -> tuple[
+    SelectorOutput,
+    dict[str, torch.Tensor],
+    int,
+    int,
+    dict[str, float | None],
+]:
+    """Solve SNIG's global KL-constrained Gibbs allocation."""
+    keys = (
+        "gain",
+        "s_PGT",
+        "support_common_mass",
+        "conditional_support_common_mass",
+        "sampled_log_ratio",
+        "sampled_conditional_log_ratio",
+        "alignment",
+        "transition_weight",
+        "support_coverage",
+        "coverage_correction",
+        "teacher_deficit",
+        "marginal_flux",
+        "kernel_derivative",
+        "common_mass_derivative",
+        "R",
+        "M",
+        "R_next",
+        "M_next",
+        "successor_excess",
+        "Phi",
+        "successor_utility",
+        "learning_value",
+        "s_SNIG",
+        "student_union_mass",
+        "teacher_union_mass",
+        "teacher_tail_mass",
+        "support_width",
+    )
+    gathered, start, end = _gather_selector_diagnostics(
+        local.diagnostics, valid_mask, keys, distributed
+    )
+    global_weights, inverse_temperature, achieved_kl = kl_constrained_allocation(
+        gathered["s_SNIG"], epsilon
+    )
+    global_g = gathered["gain"].abs().mean()
+    successor_abs = gathered["successor_utility"].abs().mean()
+    successor_share = float(
+        (float(successor_lambda) * successor_abs / global_g.clamp_min(1e-12)).item()
+    )
+    beta_value = (
+        float(inverse_temperature)
+        if math.isfinite(float(inverse_temperature))
+        else None
+    )
+    temperature_value = (
+        (1.0 / float(inverse_temperature))
+        if math.isfinite(float(inverse_temperature)) and inverse_temperature > 0.0
+        else None
+    )
+    allocation: dict[str, float | None] = {
+        "allocation_kl_epsilon": float(epsilon),
+        "allocation_kl_achieved": float(achieved_kl),
+        "allocation_inverse_temperature": beta_value,
+        "allocation_temperature": temperature_value,
+        "successor_lambda": float(successor_lambda),
+        "successor_share": successor_share,
+    }
+    diagnostics = dict(local.diagnostics)
+    diagnostics.update(
+        w=scatter_valid(global_weights[start:end], valid_mask),
+        **allocation,
+    )
+    gathered["w"] = global_weights
+    gathered.update(allocation)
+    return SelectorOutput(diagnostics["w"], diagnostics), gathered, start, end, allocation
+
+
 def _globalize_rac_output(
     local: SelectorOutput,
     valid_mask: torch.Tensor,
@@ -603,6 +687,7 @@ def _append_train_metrics_csv(path: Path, metrics: dict[str, Any]) -> None:
         "transition_weight", "support_coverage", "coverage_correction",
         "teacher_deficit", "marginal_flux", "common_mass_derivative", "H",
         "successor_excess", "sequential_gain", "learning_value", "s_CMT", "iw_weight",
+        "R_next", "M_next", "Phi", "successor_utility", "s_SNIG", "kernel_derivative",
     ):
         for statistic, value in selector.get(score, {}).items():
             row[f"{score}_{statistic}"] = value
@@ -612,6 +697,12 @@ def _append_train_metrics_csv(path: Path, metrics: dict[str, Any]) -> None:
         "selection_threshold",
         "effective_token_weight_mass",
         "effective_sample_size",
+        "allocation_kl_epsilon",
+        "allocation_kl_achieved",
+        "allocation_inverse_temperature",
+        "allocation_temperature",
+        "successor_lambda",
+        "successor_share",
     ):
         row[key] = selector.get(key)
     common = (
@@ -658,6 +749,7 @@ def _append_train_metrics_csv(path: Path, metrics: dict[str, Any]) -> None:
         "teacher_score_time_sec",
         "student_cross_topk_scoring_time",
         "ta_local_score_time_sec",
+        "snig_score_time_sec",
         "bellman_scan_time_sec",
         "forward_backward_time_sec",
         "optimizer_time_sec",
@@ -668,6 +760,12 @@ def _append_train_metrics_csv(path: Path, metrics: dict[str, Any]) -> None:
         "selection_threshold",
         "effective_token_weight_mass",
         "effective_sample_size",
+        "allocation_kl_epsilon",
+        "allocation_kl_achieved",
+        "allocation_inverse_temperature",
+        "allocation_temperature",
+        "successor_lambda",
+        "successor_share",
         "ppo_minibatch_trajectory_count",
         "local_ppo_minibatch_trajectory_count",
     )
@@ -681,6 +779,7 @@ def _append_train_metrics_csv(path: Path, metrics: dict[str, Any]) -> None:
             "transition_weight", "support_coverage", "coverage_correction",
             "teacher_deficit", "marginal_flux", "common_mass_derivative", "H",
             "successor_excess", "sequential_gain", "learning_value", "s_CMT", "iw_weight",
+            "R_next", "M_next", "Phi", "successor_utility", "s_SNIG", "kernel_derivative",
         )
         for statistic in (
             "mean",
@@ -2735,24 +2834,24 @@ def run_training(
     experiment, training = config["experiment"], config["training"]
     strategy = distributed_strategy(config, distributed)
     method = str(experiment["method"]).lower()
-    if method not in {"opd", "ta", "rac", "pgt", "cmt", "grpo", "iw"}:
+    if method not in {"opd", "ta", "rac", "pgt", "cmt", "snig", "grpo", "iw"}:
         raise ValueError(
-            "Training method must be opd, ta, rac, pgt, cmt, grpo, or iw, "
+            "Training method must be opd, ta, rac, pgt, cmt, snig, grpo, or iw, "
             f"got {method!r}"
         )
     if method == "grpo":
         return _run_grpo_training(config, command_line, distributed, device, strategy)
-    if method == "cmt":
+    if method in {"cmt", "snig"}:
         rollout_temperature = float(config["rollout"].get("temperature", 1.0))
         rollout_top_p = float(config["rollout"].get("top_p", 1.0))
         if rollout_temperature <= 0.0 or not 0.0 < rollout_top_p <= 1.0:
             raise ValueError(
-                "CMT rollout.temperature must be positive and rollout.top_p "
+                "CMT/SNIG rollout.temperature must be positive and rollout.top_p "
                 "must lie in (0, 1]"
             )
         if rollout_top_p != 1.0:
             warnings.warn(
-                "CMT's bounded truncated-kernel estimator is exact when the "
+                "CMT/SNIG bounded truncated-kernel estimator is exact when the "
                 "rollout samples the scored student distribution (top_p=1). "
                 "With top_p<1 it remains bounded but is not unbiased for that "
                 "kernel; continuing is an explicit diagnostic assumption rather "
@@ -3026,6 +3125,7 @@ def run_training(
             "global_token_budget": method in {"ta", "pgt"},
             "global_rac_weight_normalization": method == "rac",
             "global_cmt_kl_allocation": method == "cmt",
+            "global_snig_kl_allocation": method == "snig",
             "uniform_full_response_mask": method == "opd",
             "student_sharding_strategy": ("FULL_SHARD" if strategy == "fsdp" else None),
             "teacher_sharding_strategy": (
@@ -3106,6 +3206,10 @@ def run_training(
         gamma=float(selector_cfg.get("cmt_gamma", 1.0)),
         successor_lambda=float(selector_cfg.get("cmt_successor_lambda", 1.0)),
         ablation_arm=str(selector_cfg.get("cmt_ablation_arm", "canonical")),
+    )
+    snig_selector = SNIGSelector(
+        gamma=float(selector_cfg.get("snig_gamma", 1.0)),
+        successor_lambda=float(selector_cfg.get("snig_successor_lambda", 1.0)),
     )
     batch_size = global_prompt_batch_size
     if batch_size <= 0 or num_responses <= 0:
@@ -3307,7 +3411,7 @@ def run_training(
         original_rollout = rollout.input_ids.clone()
         objective_valid = rollout.valid_mask & active_trajectories.unsqueeze(1)
         rollout_hash = _rollout_hash(rollout.response_ids, objective_valid, distributed)
-        use_joint_scoring = method in {"pgt", "cmt"} or (
+        use_joint_scoring = method in {"pgt", "cmt", "snig"} or (
             method in {"ta", "rac"}
             and bool(selector_cfg.get("joint_cross_scoring", True))
         )
@@ -3395,7 +3499,7 @@ def run_training(
         reference_student_log_probs = student_scores.top_k_log_probs
         reference_teacher_log_probs = teacher_scores.candidate_log_probs
         reference_support_mask = None
-        if method in {"pgt", "cmt"}:
+        if method in {"pgt", "cmt", "snig"}:
             if student_scores.candidate_log_probs is None:
                 raise AssertionError(
                     "Joint scoring did not produce student probabilities on teacher Top-K"
@@ -3438,6 +3542,18 @@ def run_training(
                     if value is not None:
                         finite_or_raise(f"CMT diagnostic {field}", value[valid])
                         cmt_raw.diagnostics[field] = value.detach().float()
+        snig_raw: PGTOutput | None = None
+        snig_score_time = 0.0
+        if method == "snig":
+            if pgt_raw is None:
+                raise AssertionError("SNIG requires the shared PGT support")
+            snig_raw, snig_score_time = _timed(
+                device,
+                snig_selector.compute_scores,
+                pgt_raw,
+                rollout.response_ids,
+                valid,
+            )
         iw_weights: torch.Tensor | None = None
         iw_weight_stats: dict[str, float] | None = None
         if method == "iw":
@@ -3551,6 +3667,8 @@ def run_training(
         global_ta_diagnostics: dict[str, torch.Tensor] = {}
         global_pgt_diagnostics: dict[str, torch.Tensor] = {}
         global_cmt_diagnostics: dict[str, torch.Tensor] = {}
+        global_snig_diagnostics: dict[str, torch.Tensor] = {}
+        snig_allocation: dict[str, float | None] = {}
         student_cross_score_time = 0.0
         if method == "iw":
             if distributed.is_main:
@@ -3649,6 +3767,33 @@ def run_training(
             bellman_scan_time = cmt_score_time
             selector_time = pgt_score_time + cmt_score_time + cmt_gather_time
             global_primary_diagnostics = global_cmt_diagnostics
+        elif method == "snig":
+            if snig_raw is None:
+                raise AssertionError("SNIG selector was not computed")
+            if distributed.is_main:
+                progress.set_postfix_str(
+                    "stage=selector-SNIG-normalized-successor", refresh=True
+                )
+            snig_globalized, snig_gather_time = _timed(
+                device,
+                _globalize_snig_output,
+                snig_raw,
+                valid,
+                float(selector_cfg.get("snig_allocation_kl", 0.5)),
+                float(selector_cfg.get("snig_successor_lambda", 1.0)),
+                distributed,
+            )
+            (
+                primary,
+                global_snig_diagnostics,
+                primary_start,
+                primary_end,
+                snig_allocation,
+            ) = snig_globalized
+            ta_time = pgt_score_time
+            bellman_scan_time = snig_score_time
+            selector_time = pgt_score_time + snig_score_time + snig_gather_time
+            global_primary_diagnostics = global_snig_diagnostics
         else:
             if use_joint_scoring:
                 student_on_teacher = student_scores
@@ -3743,7 +3888,13 @@ def run_training(
                 primary_start, primary_end = ta_start, ta_end
         finite_or_raise(f"{method} selector", primary.scores[valid])
         score_key = (
-            "s_TA" if method == "ta" else "s_PGT" if method == "pgt" else "w"
+            "s_TA"
+            if method == "ta"
+            else "s_PGT"
+            if method == "pgt"
+            else "s_SNIG"
+            if method == "snig"
+            else "w"
         )
         if method in {"ta", "pgt"}:
             selected, global_selected = _local_mask_from_global_budget(
@@ -3997,13 +4148,14 @@ def run_training(
             "global_ta_normalization": method in {"ta", "rac"},
             "global_token_budget": method in {"ta", "pgt"},
             "uniform_full_response_mask": method == "opd",
-            "all_response_tokens_supervised": method in {"opd", "rac", "cmt", "iw"},
+            "all_response_tokens_supervised": method in {"opd", "rac", "cmt", "snig", "iw"},
             "token_allocation_policy": {
                 "opd": "uniform_all_valid_response_tokens",
                 "ta": "hard_global_top_rho",
                 "rac": "bellman_soft_all_valid_response_tokens",
                 "pgt": "hard_global_top_rho_projected_gradient_gain",
                 "cmt": "kl_constrained_global_coupled_marginal_teachability",
+                "snig": "kl_constrained_global_normalized_successor_information_geometry",
                 "iw": "official_prefix_remaining_discrepancy_advantage_weight",
             }[method],
             "objective_normalization": "global_weighted_token_mean",
@@ -4013,7 +4165,7 @@ def run_training(
                 if method == "iw"
                 else (
                     "student_teacher_top_k_union"
-                    if method in {"pgt", "cmt"}
+                    if method in {"pgt", "cmt", "snig"}
                     else "student_top_k"
                 )
             ),
@@ -4022,7 +4174,7 @@ def run_training(
                 if method == "iw"
                 else (
                     "conditional_student_teacher_union"
-                    if method in {"pgt", "cmt"}
+                    if method in {"pgt", "cmt", "snig"}
                     else "legacy_global_log_probability_support"
                 )
             ),
@@ -4097,6 +4249,7 @@ def run_training(
             "ta_diagnostic_time": distributed.max_float(ta_time),
             "ta_local_score_time_sec": distributed.max_float(ta_time),
             "cmt_score_time_sec": distributed.max_float(cmt_score_time),
+            "snig_score_time_sec": distributed.max_float(snig_score_time),
             "selector_time": distributed.max_float(selector_time),
             "bellman_scan_time_sec": distributed.max_float(bellman_scan_time),
             "forward_backward_time_sec": distributed.max_float(
@@ -4158,6 +4311,10 @@ def run_training(
             "checkpoint": str(checkpoint) if checkpoint else None,
             "rollout_token_sha256": rollout_hash,
         }
+        if method == "snig":
+            # Allocation scalars are not token-shaped diagnostics, so carry
+            # them explicitly into the persisted selector metrics.
+            final_metrics["selector"].update(snig_allocation)
         # The rollout server is already sleeping; release tensors before a
         # possible periodic-evaluation subprocess reserves its KV cache.
         del (
@@ -4172,10 +4329,12 @@ def run_training(
             ta_output,
             pgt_raw,
             cmt_raw,
+            snig_raw,
             global_primary_diagnostics,
             global_ta_diagnostics,
             global_pgt_diagnostics,
             global_cmt_diagnostics,
+            global_snig_diagnostics,
             global_selected,
             valid,
             objective_valid,

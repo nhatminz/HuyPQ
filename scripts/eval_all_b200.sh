@@ -13,6 +13,7 @@ PGT_EVAL_OUTPUT="${PGT_EVAL_OUTPUT:-${RUN_RESULTS_DIR}/eval/pgt_opd}"
 CMT_EVAL_OUTPUT="${CMT_EVAL_OUTPUT:-${RUN_RESULTS_DIR}/eval/cmt_opd}"
 GRPO_EVAL_OUTPUT="${GRPO_EVAL_OUTPUT:-${RUN_RESULTS_DIR}/eval/grpo}"
 IW_EVAL_OUTPUT="${IW_EVAL_OUTPUT:-${RUN_RESULTS_DIR}/eval/iw}"
+SNIG_EVAL_OUTPUT="${SNIG_EVAL_OUTPUT:-${RUN_RESULTS_DIR}/eval/snig_opd}"
 OPD_CHECKPOINT="${OPD_CHECKPOINT:-${OPD_RUN_OUTPUT}/final}"
 TA_CHECKPOINT="${TA_CHECKPOINT:-${TA_RUN_OUTPUT}/final}"
 RAC_CHECKPOINT="${RAC_CHECKPOINT:-${RAC_RUN_OUTPUT}/final}"
@@ -20,10 +21,12 @@ PGT_CHECKPOINT="${PGT_CHECKPOINT:-${PGT_RUN_OUTPUT}/final}"
 CMT_CHECKPOINT="${CMT_CHECKPOINT:-${CMT_RUN_OUTPUT}/final}"
 GRPO_CHECKPOINT="${GRPO_CHECKPOINT:-${GRPO_RUN_OUTPUT}/final}"
 IW_CHECKPOINT="${IW_CHECKPOINT:-${IW_RUN_OUTPUT}/final}"
+SNIG_CHECKPOINT="${SNIG_CHECKPOINT:-${SNIG_RUN_OUTPUT}/final}"
 RUN_PGT_EVAL="${RUN_PGT_EVAL:-false}"
 RUN_CMT_EVAL="${RUN_CMT_EVAL:-false}"
 RUN_GRPO_EVAL="${RUN_GRPO_EVAL:-false}"
 RUN_IW_EVAL="${RUN_IW_EVAL:-false}"
+RUN_SNIG_EVAL="${RUN_SNIG_EVAL:-false}"
 
 echo "Evaluating OPD ${OPD_RUN_NAME}, TA ${TA_RUN_NAME}, and RAC ${RAC_RUN_NAME}"
 if [[ "${RUN_PGT_EVAL}" == "true" ]]; then
@@ -38,12 +41,19 @@ fi
 if [[ "${RUN_IW_EVAL}" == "true" ]]; then
   echo "IW-OPD evaluation enabled: ${IW_RUN_NAME}"
 fi
+if [[ "${RUN_SNIG_EVAL}" == "true" ]]; then
+  RUN_NAME="${RUN_NAME}" RESULTS_DIR="${RUN_RESULTS_DIR}" \
+    SNIG_OUTPUT_DIR="${SNIG_RUN_OUTPUT}" SNIG_CHECKPOINT="${SNIG_CHECKPOINT}" \
+    SNIG_EVAL_OUTPUT="${SNIG_EVAL_OUTPUT}" \
+    bash "${SCRIPT_DIR}/eval_snig_b200.sh"
+fi
 echo "Comparison name: ${COMPARISON_NAME}"
 echo "OPD checkpoint: ${OPD_CHECKPOINT}"
 echo "TA checkpoint: ${TA_CHECKPOINT}"
 echo "RAC checkpoint: ${RAC_CHECKPOINT}"
 echo "PGT checkpoint: ${PGT_CHECKPOINT}"
 echo "CMT checkpoint: ${CMT_CHECKPOINT}"
+echo "SNIG checkpoint: ${SNIG_CHECKPOINT}"
 echo "Evaluation results: ${RUN_RESULTS_DIR}"
 RUN_NAME="${RUN_NAME}" RESULTS_DIR="${RUN_RESULTS_DIR}" \
   BASE_EVAL_OUTPUT="${BASE_EVAL_OUTPUT}" \
@@ -97,6 +107,9 @@ fi
 if [[ "${RUN_CMT_EVAL}" == "true" ]]; then
   AGGREGATE_ARGS+=(--cmt-dir "${CMT_EVAL_OUTPUT}")
 fi
+if [[ "${RUN_SNIG_EVAL}" == "true" ]]; then
+  AGGREGATE_ARGS+=(--snig-dir "${SNIG_EVAL_OUTPUT}")
+fi
 if [[ "${RUN_GRPO_EVAL}" == "true" ]]; then
   AGGREGATE_ARGS+=(--grpo-dir "${GRPO_EVAL_OUTPUT}")
 fi
@@ -112,4 +125,5 @@ RUN_NAME="${RUN_NAME}" RESULTS_DIR="${RUN_RESULTS_DIR}" \
   CMT_OUTPUT_DIR="${CMT_RUN_OUTPUT}" \
   GRPO_OUTPUT_DIR="${GRPO_RUN_OUTPUT}" \
   IW_OUTPUT_DIR="${IW_RUN_OUTPUT}" \
+  SNIG_OUTPUT_DIR="${SNIG_RUN_OUTPUT}" \
   bash "${SCRIPT_DIR}/plot_results.sh"

@@ -1,0 +1,21 @@
+_base_: qwen3_b200_base.yaml
+
+# SNIG-OPD: PGT local gain plus the normalized successor derivative.  CMT
+# remains a separate baseline; this config changes only the selector method.
+experiment:
+  method: snig
+  output_dir: outputs/snig_opd
+
+rollout:
+  # The SNIG kernel estimator is exact for the scored student distribution.
+  # Keep top_p=1 and use the same rollout protocol as CMT.
+  top_p: 1.0
+
+selector:
+  joint_cross_scoring: true
+  pgt_vocab_chunk_tokens: 2048
+  # KL(nu || uniform) budget.  The inverse temperature is solved per batch.
+  snig_allocation_kl: 0.5
+  snig_gamma: 1.0
+  # Calibrate this with successor_share on a short run before long training.
+  snig_successor_lambda: 1.0

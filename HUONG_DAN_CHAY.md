@@ -1,11 +1,11 @@
-# Hướng dẫn chạy BellmanOPD trên B200
+# Hướng dẫn chạy Bellman2 (SNIG-OPD) trên B200
 
 File này là runbook thực hành cho các method trong repository hiện tại: OPD thuần,
-TA-OPD, CMT-OPD, GRPO và IW-OPD (các script Bellman-RAC/PGT legacy vẫn được giữ tương thích).
+TA-OPD, CMT-OPD, SNIG-OPD, GRPO và IW-OPD (các script Bellman-RAC/PGT legacy vẫn được giữ tương thích).
 Mọi lệnh đều chạy từ thư mục:
 
 ```bash
-cd /mnt/hdd/nhatminh/OPD/BellmanOPD
+cd /mnt/hdd/nhatminh/OPD/Bellman2
 ```
 
 `RUN_B200.md` chứa phần giải thích hạ tầng và tuning chi tiết hơn; file này tập trung vào các
@@ -16,7 +16,7 @@ lệnh thường dùng có thể copy-paste.
 Nếu cluster đã có PyTorch/vLLM environment chuẩn cho B200, dùng environment đó. Nếu chưa:
 
 ```bash
-cd /mnt/hdd/nhatminh/OPD/BellmanOPD
+cd /mnt/hdd/nhatminh/OPD/Bellman2
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
@@ -79,6 +79,7 @@ export TA_RUN_NAME="ta_${PAIR}"
 export RAC_RUN_NAME="rac_${PAIR}"
 export PGT_RUN_NAME="pgt_${PAIR}"
 export CMT_RUN_NAME="cmt_${PAIR}"
+export SNIG_RUN_NAME="snig_${PAIR}"
 # GRPO has no teacher--student pair; keep its label independent of PAIR.
 export GRPO_RUN_NAME="grpo_qwen3_1p7b_compmath_seed42_${PAIR}"
 export IW_RUN_NAME="iw_qwen3_1p7b_8b_compmath_seed42_${PAIR}"
@@ -137,6 +138,81 @@ không bật mặc định:
 ```bash
 CMT_FULL_VOCAB_DIAGNOSTICS=true RUN_NAME="$CMT_RUN_NAME" \
   bash scripts/train_cmt_b200.sh
+```
+
+### SNIG-OPD (Successor-Normalized Information Geometry)
+
+SNIG là method mới trong `Bellman2`; code và output của CMT trong `BellmanOPD` không bị
+thay đổi. SNIG dùng đúng Top-K union support mà loss OPD thực sự cập nhật:
+
+* `g_t` là local PGT/Fisher gain trên simplex có điều kiện của
+  `TopK(student) ∪ TopK(teacher)`;
+* successor dùng truncated common-mass kernel với **xác suất gốc** trên union,
+  `c_t = 1[y_t∈U] min(1, q°(y_t)/p°(y_t))`, nên `0 ≤ c_t ≤ 1` và không có
+  inverse-coverage correction;
+* `R_t = g_t + γ c_t R_{t+1}`, `M_t = 1 + γ c_t M_{t+1}` và
+  `u_t = γ δ_t (R_{t+1}-g_t M_{t+1})/[M_t(M_t+R_t)]`;
+* score cuối `S_t = g_t + λ u_t`. `γ=1` là finite-horizon mặc định; `λ=0` là
+  arm PGT-Gibbs (cùng allocator nhưng tắt successor), dùng để tách ảnh hưởng của
+  successor khỏi ảnh hưởng của Gibbs allocator;
+* trên toàn bộ global rollout, allocator giải bài toán
+  `max E_ν[S]` với `KL(ν || Uniform) ≤ SNIG_ALLOCATION_KL`, rồi chuẩn hoá
+  `w=Nν` (mean bằng 1 trên vector global). Loss thực tế vẫn chuẩn hoá theo
+  tổng weight của từng PPO minibatch, đúng protocol CMT và không làm thay đổi
+  effective batch/optimizer-step semantics.
+
+Không có learned critic, counterfactual rollout hay forward pass mới so với CMT. Đây là
+local frozen-descendant surrogate; `successor_share` và histogram là diagnostic để kiểm
+tra successor term có thực sự khác PGT-Gibbs hay không, không phải tuyên bố về exact
+shared-neural-parameter utility.
+
+Chạy mặc định trên Competition-MATH (Qwen3-8B teacher / Qwen3-1.7B student):
+
+```bash
+cd /mnt/hdd/nhatminh/OPD/Bellman2
+CUDA_VISIBLE_DEVICES=0,1 \
+TRAIN_DATASET=competition_math \
+SNIG_RUN_NAME="snig_qwen3_8b_1p7b_compmath_seed42_$(date +%Y%m%d_%H%M%S)" \
+BATCH_SIZE=64 GLOBAL_BATCH_SIZE=64 PPO_MINI_BATCH_SIZE=16 \
+MICRO_BATCH_SIZE_PER_GPU=8 NUM_RESPONSES=1 \
+LR=5e-6 MAX_RESPONSE_LEN=4096 TOP_K=16 \
+SNIG_ALLOCATION_KL=0.5 SNIG_GAMMA=1.0 SNIG_SUCCESSOR_LAMBDA=1.0 \
+SAVE_INTERVAL=100 EVAL_INTERVAL=100 TRAIN_EVAL_ENABLED=true \
+  bash scripts/train_snig_b200.sh
+```
+
+DAPO-Math dùng cùng code, chỉ đổi preset và prompt key tự động:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+TRAIN_DATASET=dapo_math \
+SNIG_RUN_NAME="snig_qwen3_8b_1p7b_dapo_seed42_$(date +%Y%m%d_%H%M%S)" \
+BATCH_SIZE=64 PPO_MINI_BATCH_SIZE=16 MICRO_BATCH_SIZE_PER_GPU=8 \
+LR=5e-6 MAX_RESPONSE_LEN=4096 \
+  bash scripts/train_snig_b200.sh
+```
+
+Smoke test trước khi chạy dài (không ghi đè run cũ):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 TRAIN_EVAL_ENABLED=false MAX_STEPS=1 \
+SNIG_RUN_NAME=snig_smoke_$(date +%Y%m%d_%H%M%S) \
+  bash scripts/train_snig_b200.sh
+```
+
+SNIG log `snig/successor_lambda`, `snig/successor_share`, `snig/inverse_temperature`, `snig/allocation_kl`,
+`snig/allocation_kl_achieved`, `snig/score_mean`, `snig/successor_utility_mean` trong
+TensorBoard; `token_score_stats/step-*.json` chứa raw quantile/histogram cho `gain`,
+`successor_utility`, `R`, `M`, `Phi`, `s_SNIG`, `w` và block `allocation`. Trước full run,
+hãy chạy một step rồi xem `successor_share`: nếu rất nhỏ, SNIG đang gần PGT-Gibbs và đó
+là kết quả cần ghi nhận, không nên tự ý thêm clipping hay discount.
+
+Arm PGT-Gibbs để falsify successor hypothesis:
+
+```bash
+SNIG_SUCCESSOR_LAMBDA=0 MAX_STEPS=100 \
+SNIG_RUN_NAME=snig_pgt_gibbs_seed42 \
+  bash scripts/train_snig_b200.sh
 ```
 
 ### TA-OPD
@@ -362,6 +438,15 @@ IW_RUN_NAME="${IW_RUN_NAME}" \
 bash scripts/plot_training_progress.sh --plot-name opd_ta_cmt_grpo_iw
 ```
 
+Vẽ SNIG cùng các baseline:
+
+```bash
+PLOT_METHODS="opd ta cmt snig" \
+OPD_RUN_NAME="$OPD_RUN_NAME" TA_RUN_NAME="$TA_RUN_NAME" \
+CMT_RUN_NAME="$CMT_RUN_NAME" SNIG_RUN_NAME="$SNIG_RUN_NAME" \
+  bash scripts/plot_training_progress.sh --plot-name opd_ta_cmt_snig
+```
+
 ### Bellman-RAC và PGT (nếu cần baseline đầy đủ)
 
 ```bash
@@ -406,6 +491,7 @@ outputs/<run-name>/ta_opd/
 outputs/<run-name>/rac_opd/
 outputs/<run-name>/pgt_opd/
 outputs/<run-name>/cmt_opd/
+outputs/<run-name>/snig_opd/
 outputs/<run-name>/iw/
 ```
 
@@ -441,6 +527,9 @@ RUN_NAME="$TA_RUN_NAME" RESUME=auto MAX_STEPS=200 \
 
 RUN_NAME="$CMT_RUN_NAME" RESUME=auto MAX_STEPS=200 \
   bash scripts/train_cmt_b200.sh
+
+RUN_NAME="$SNIG_RUN_NAME" RESUME=auto MAX_STEPS=200 \
+  bash scripts/train_snig_b200.sh
 
 RUN_NAME="$GRPO_RUN_NAME" RESUME=auto MAX_STEPS=200 \
   bash scripts/train_grpo_b200.sh
@@ -483,7 +572,7 @@ CUDA_VISIBLE_DEVICES=0,1 RUN_NAME="$CMT_RUN_NAME" RESUME=auto MAX_STEPS=200 \
 
 ```bash
 tensorboard --logdir_spec \
-  "OPD:outputs/${OPD_RUN_NAME}/opd/tensorboard,TA:outputs/${TA_RUN_NAME}/ta_opd/tensorboard,CMT:outputs/${CMT_RUN_NAME}/cmt_opd/tensorboard,GRPO:outputs/${GRPO_RUN_NAME}/grpo/tensorboard,IW:outputs/${IW_RUN_NAME}/iw/tensorboard,RAC:outputs/${RAC_RUN_NAME}/rac_opd/tensorboard" \
+  "OPD:outputs/${OPD_RUN_NAME}/opd/tensorboard,TA:outputs/${TA_RUN_NAME}/ta_opd/tensorboard,CMT:outputs/${CMT_RUN_NAME}/cmt_opd/tensorboard,SNIG:outputs/${SNIG_RUN_NAME}/snig_opd/tensorboard,GRPO:outputs/${GRPO_RUN_NAME}/grpo/tensorboard,IW:outputs/${IW_RUN_NAME}/iw/tensorboard,RAC:outputs/${RAC_RUN_NAME}/rac_opd/tensorboard" \
   --bind_all --port 6006
 ```
 
@@ -509,6 +598,7 @@ transition weight, `R`, `M`, `H`, successor excess và sequential gain.
 OPD_RUN_NAME="$OPD_RUN_NAME" bash scripts/eval_opd_b200.sh
 TA_RUN_NAME="$TA_RUN_NAME" bash scripts/eval_ta_b200.sh
 CMT_RUN_NAME="$CMT_RUN_NAME" bash scripts/eval_cmt_b200.sh
+SNIG_RUN_NAME="$SNIG_RUN_NAME" bash scripts/eval_snig_b200.sh
 IW_RUN_NAME="$IW_RUN_NAME" bash scripts/eval_iw_b200.sh
 ```
 
@@ -549,7 +639,16 @@ Thêm PGT:
 RUN_PGT_EVAL=true RUN_CMT_EVAL=true \
 OPD_RUN_NAME="$OPD_RUN_NAME" TA_RUN_NAME="$TA_RUN_NAME" \
 RAC_RUN_NAME="$RAC_RUN_NAME" PGT_RUN_NAME="$PGT_RUN_NAME" \
-CMT_RUN_NAME="$CMT_RUN_NAME" bash scripts/eval_all_b200.sh
+  CMT_RUN_NAME="$CMT_RUN_NAME" bash scripts/eval_all_b200.sh
+```
+
+Thêm SNIG vào aggregate cuối:
+
+```bash
+RUN_CMT_EVAL=true RUN_SNIG_EVAL=true \
+OPD_RUN_NAME="$OPD_RUN_NAME" TA_RUN_NAME="$TA_RUN_NAME" \
+RAC_RUN_NAME="$RAC_RUN_NAME" CMT_RUN_NAME="$CMT_RUN_NAME" SNIG_RUN_NAME="$SNIG_RUN_NAME" \
+  bash scripts/eval_all_b200.sh
 ```
 
 Giới hạn evaluation để debug:
@@ -586,7 +685,7 @@ EVAL_NUM_RESPONSES=1 EVAL_TEMPERATURE=1 \
 Khi checkpoint nằm dưới `outputs/<run>/<method>/` và bỏ qua `OUTPUT_DIR`, script ghi artifact
 chi tiết vào `<method-output>/checkpoint_eval/<checkpoint-name>/` và tự upsert kết quả vào
 `<method-output>/eval_history.jsonl` (đồng thời cập nhật `eval_metrics.csv`). Thay `cmt` bằng
-`opd`, `ta`, `rac` hoặc `pgt`. Có thể truyền `OUTPUT_DIR` thứ ba nếu muốn giữ artifact chi tiết
+`opd`, `ta`, `rac`, `pgt` hoặc `snig`. Có thể truyền `OUTPUT_DIR` thứ ba nếu muốn giữ artifact chi tiết
 ở một thư mục khác; history của run vẫn được cập nhật nếu đường dẫn checkpoint có layout chuẩn.
 
 Pass@8 cho một checkpoint bất kỳ:
@@ -663,13 +762,16 @@ REEVAL_NUM_RESPONSES=8 REEVAL_TEMPERATURE=0.7 REEVAL_TOP_P=0.95 \
   bash scripts/reeval_method_checkpoints_b200.sh cmt
 ```
 
-Shortcut re-eval pass@8 (hoạt động cho `opd`, `ta`, `rac`, `pgt`, `cmt`):
+Shortcut re-eval pass@8 (hoạt động cho `opd`, `ta`, `rac`, `pgt`, `cmt`, `snig`):
 
 ```bash
 REEVAL_DRY_RUN=true CUDA_VISIBLE_DEVICES=0,1 \
   bash scripts/reeval_pass8_b200.sh cmt "$CMT_RUN_NAME"
 REEVAL_WORLD_SIZE=2 CUDA_VISIBLE_DEVICES=0,1 \
   bash scripts/reeval_pass8_b200.sh cmt "$CMT_RUN_NAME"
+
+REEVAL_WORLD_SIZE=2 CUDA_VISIBLE_DEVICES=0,1 \
+  bash scripts/reeval_pass8_b200.sh snig "$SNIG_RUN_NAME"
 ```
 
 Pass@8 được lưu riêng trong `eval_history_pass_at_8.jsonl`,
@@ -753,7 +855,7 @@ step 1, mỗi 50 step và step cuối). Không cần load checkpoint hay chạy 
 các biểu đồ này. Chạy:
 
 ```bash
-cd /mnt/hdd/nhatminh/OPD/BellmanOPD
+cd /mnt/hdd/nhatminh/OPD/Bellman2
 CMT_RUN_NAME="cmt_..." bash scripts/plot_cmt_scores.sh
 ```
 
@@ -819,17 +921,19 @@ Sau `eval_all_b200.sh`, dùng:
 ```bash
 RUN_NAME="$OPD_RUN_NAME" \
 OPD_RUN_NAME="$OPD_RUN_NAME" TA_RUN_NAME="$TA_RUN_NAME" \
-RAC_RUN_NAME="$RAC_RUN_NAME" CMT_RUN_NAME="$CMT_RUN_NAME" \
+RAC_RUN_NAME="$RAC_RUN_NAME" CMT_RUN_NAME="$CMT_RUN_NAME" SNIG_RUN_NAME="$SNIG_RUN_NAME" \
 RESULTS_DIR="results/${OPD_RUN_NAME}_vs_${TA_RUN_NAME}_vs_${RAC_RUN_NAME}" \
   bash scripts/plot_results.sh --plot-name final_comparison
 ```
 
 `plot_results.sh` là plot final aggregate; `plot_training_progress.sh` là plot diễn biến theo
-checkpoint. Nếu có CMT/GRPO/PGT trong aggregate, cần truyền đúng output directory và đã chạy eval cho
+checkpoint. Nếu có CMT/SNIG/GRPO/PGT trong aggregate, cần truyền đúng output directory và đã chạy eval cho
 method đó.
-Comparison chỉ gồm OPD/TA/CMT/GRPO cũng được; `plot_results.sh` tự bỏ qua RAC nếu
+Comparison chỉ gồm OPD/TA/CMT/SNIG/GRPO cũng được; `plot_results.sh` tự bỏ qua RAC nếu
 `RAC_RUN_OUTPUT/metrics.jsonl` không tồn tại, còn `plot_training_progress.sh` là lựa chọn
 trực tiếp và rõ ràng nhất.
+Khi output SNIG có `token_score_stats`, plot progress tự tạo thêm
+`snig_token_score_distributions.png` (gain, successor utility, score và weight).
 
 ### Eval và re-eval GRPO
 

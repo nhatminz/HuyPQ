@@ -81,6 +81,7 @@ PGT_CONFIG="${REPO_DIR}/configs/qwen3_b200_pgt.yaml"
 CMT_CONFIG="${REPO_DIR}/configs/qwen3_b200_cmt.yaml"
 GRPO_CONFIG="${REPO_DIR}/configs/qwen3_b200_grpo.yaml"
 IW_CONFIG="${REPO_DIR}/configs/qwen3_b200_iw.yaml"
+SNIG_CONFIG="${REPO_DIR}/configs/qwen3_b200_snig.yaml"
 
 storage_asset_path() {
   if [[ "$1" == /* ]]; then
@@ -164,6 +165,7 @@ resolve_run_paths() {
   local cmt_name="${CMT_RUN_NAME:-${RUN_NAME}}"
   local grpo_name="${GRPO_RUN_NAME:-${RUN_NAME}}"
   local iw_name="${IW_RUN_NAME:-${RUN_NAME}}"
+  local snig_name="${SNIG_RUN_NAME:-${RUN_NAME}}"
   if [[ -n "${COMPARISON_NAME:-}" ]]; then
     COMPARISON_NAME="${COMPARISON_NAME}"
   elif [[ -n "${OPD_RUN_NAME:-}" ]]; then
@@ -173,7 +175,7 @@ resolve_run_paths() {
   else
     COMPARISON_NAME="${RUN_NAME}"
   fi
-  for name in "${RUN_NAME}" "${opd_name}" "${ta_name}" "${rac_name}" "${pgt_name}" "${cmt_name}" "${grpo_name}" "${iw_name}" "${COMPARISON_NAME}"; do
+  for name in "${RUN_NAME}" "${opd_name}" "${ta_name}" "${rac_name}" "${pgt_name}" "${cmt_name}" "${grpo_name}" "${iw_name}" "${snig_name}" "${COMPARISON_NAME}"; do
     if ! [[ "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
       echo "Run names may contain only letters, numbers, dot, underscore, and dash: ${name}" >&2
       return 1
@@ -186,6 +188,7 @@ resolve_run_paths() {
   CMT_RUN_NAME="${cmt_name}"
   GRPO_RUN_NAME="${grpo_name}"
   IW_RUN_NAME="${iw_name}"
+  SNIG_RUN_NAME="${snig_name}"
   OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_DIR}/outputs}"
   OPD_RUN_OUTPUT="${OPD_OUTPUT_DIR:-${OUTPUT_ROOT}/${OPD_RUN_NAME}/opd}"
   TA_RUN_OUTPUT="${TA_OUTPUT_DIR:-${OUTPUT_ROOT}/${TA_RUN_NAME}/ta_opd}"
@@ -194,6 +197,7 @@ resolve_run_paths() {
   CMT_RUN_OUTPUT="${CMT_OUTPUT_DIR:-${OUTPUT_ROOT}/${CMT_RUN_NAME}/cmt_opd}"
   GRPO_RUN_OUTPUT="${GRPO_OUTPUT_DIR:-${OUTPUT_ROOT}/${GRPO_RUN_NAME}/grpo}"
   IW_RUN_OUTPUT="${IW_OUTPUT_DIR:-${OUTPUT_ROOT}/${IW_RUN_NAME}/iw}"
+  SNIG_RUN_OUTPUT="${SNIG_OUTPUT_DIR:-${OUTPUT_ROOT}/${SNIG_RUN_NAME}/snig_opd}"
   RUN_RESULTS_DIR="${RESULTS_DIR:-${REPO_DIR}/results/${COMPARISON_NAME}}"
 }
 
@@ -446,6 +450,13 @@ build_training_args() {
       --set "iw_opd.weight_max=${IW_OPD_WEIGHT_MAX:-1.5}"
       --set "iw_opd.use_abs=${IW_OPD_WEIGHT_USE_ABS:-true}"
       --set "iw_opd.eps=${IW_OPD_WEIGHT_EPS:-1.0e-8}"
+    )
+  fi
+  if [[ "${B200_METHOD:-}" == "snig" ]]; then
+    COMMON_TRAIN_ARGS+=(
+      --set "selector.snig_allocation_kl=${SNIG_ALLOCATION_KL:-0.5}"
+      --set "selector.snig_gamma=${SNIG_GAMMA:-1.0}"
+      --set "selector.snig_successor_lambda=${SNIG_SUCCESSOR_LAMBDA:-1.0}"
     )
   fi
   if batch_autotune_enabled; then

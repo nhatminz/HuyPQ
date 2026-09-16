@@ -40,6 +40,9 @@ def _controlled_config(method: str = "ta") -> dict:
             "rac_gamma": 0.995,
             "rac_w_min": 0.1,
             "rac_beta": 2.0,
+            "snig_allocation_kl": 0.5,
+            "snig_gamma": 1.0,
+            "snig_successor_lambda": 1.0,
         },
         "token_budget": {"rho": 0.10},
         "training": {
@@ -439,6 +442,20 @@ class ResumeTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "experiment.method"):
                 validate_resume_config(checkpoint, _controlled_config("rac"))
+
+    def test_resume_rejects_changed_snig_selector_hyperparameters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            checkpoint = output / "checkpoint-000100"
+            checkpoint.mkdir()
+            (output / "resolved_config.yaml").write_text(
+                yaml.safe_dump(_controlled_config("snig")), encoding="utf-8"
+            )
+            for key in ("snig_allocation_kl", "snig_gamma", "snig_successor_lambda"):
+                candidate = _controlled_config("snig")
+                candidate["selector"][key] += 0.1
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, key):
+                    validate_resume_config(checkpoint, candidate)
 
     def test_auto_resume_uses_latest_complete_checkpoint(self):
         with tempfile.TemporaryDirectory() as temporary:

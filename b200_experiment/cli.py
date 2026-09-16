@@ -106,6 +106,7 @@ def _default_history_method(name: str, config: dict) -> str:
         "RAC": "rac",
         "PGT": "pgt",
         "CMT-OPD": "cmt",
+        "SNIG-OPD": "snig",
         "IW-OPD": "iw",
     }.get(name, name.lower().replace("-", "_"))
 
@@ -194,7 +195,7 @@ def _evaluate_checkpoint(args) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Standalone B200 OPD, TA-OPD, CMT-OPD, GRPO, IW-OPD, and legacy baselines"
+        description="Standalone B200 OPD, TA-OPD, CMT-OPD, SNIG-OPD, GRPO, IW-OPD, and legacy baselines"
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -233,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument(
         "--name",
         required=True,
-        choices=("Base", "OPD", "TA-OPD", "RAC", "PGT", "CMT-OPD", "GRPO", "IW-OPD"),
+        choices=("Base", "OPD", "TA-OPD", "RAC", "PGT", "CMT-OPD", "SNIG-OPD", "GRPO", "IW-OPD"),
     )
     evaluate.add_argument("--model", required=True)
     evaluate.add_argument("--output", required=True)
@@ -254,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument(
         "--history-method",
-        help="Method slug for the history row (for example opd, ta, rac, or cmt)",
+        help="Method slug for the history row (for example opd, ta, rac, cmt, or snig)",
     )
     evaluate.add_argument(
         "--history-step",
@@ -274,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--rac-dir")
     aggregate.add_argument("--pgt-dir")
     aggregate.add_argument("--cmt-dir")
+    aggregate.add_argument("--snig-dir")
     aggregate.add_argument("--grpo-dir")
     aggregate.add_argument("--iw-dir")
     aggregate.add_argument("--output", required=True)
@@ -285,6 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
     plot.add_argument("--rac-output")
     plot.add_argument("--pgt-output")
     plot.add_argument("--cmt-output")
+    plot.add_argument("--snig-output")
     plot.add_argument("--grpo-output")
     plot.add_argument("--iw-output")
     plot.add_argument("--smoothing-window", type=int, default=10)
@@ -306,6 +309,8 @@ def build_parser() -> argparse.ArgumentParser:
             "bellman-rac",
             "pgt",
             "cmt",
+            "snig",
+            "snig-opd",
             "grpo",
             "iw",
             "iw-opd",
@@ -316,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--methods",
         nargs="+",
         choices=(
-            "opd", "pure-opd", "ta", "ta-opd", "rac", "bellman-rac", "pgt", "cmt", "grpo", "iw", "iw-opd"
+            "opd", "pure-opd", "ta", "ta-opd", "rac", "bellman-rac", "pgt", "cmt", "snig", "snig-opd", "grpo", "iw", "iw-opd"
         ),
         help="One or more methods to plot in the requested order",
     )
@@ -325,6 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     progress_plot.add_argument("--rac-output")
     progress_plot.add_argument("--pgt-output")
     progress_plot.add_argument("--cmt-output")
+    progress_plot.add_argument("--snig-output")
     progress_plot.add_argument("--grpo-output")
     progress_plot.add_argument("--iw-output")
     progress_plot.add_argument("--smoothing-window", type=int, default=10)
@@ -384,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
             model_dirs["PGT"] = args.pgt_dir
         if args.cmt_dir:
             model_dirs["CMT-OPD"] = args.cmt_dir
+        if args.snig_dir:
+            model_dirs["SNIG-OPD"] = args.snig_dir
         if args.grpo_dir:
             model_dirs["GRPO"] = args.grpo_dir
         if args.iw_dir:
@@ -402,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
             opd_output=args.opd_output,
             pgt_output=args.pgt_output,
             cmt_output=args.cmt_output,
+            snig_output=args.snig_output,
             grpo_output=args.grpo_output,
             iw_output=args.iw_output,
         )
@@ -417,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
             methods=args.methods,
             pgt_output=args.pgt_output,
             cmt_output=args.cmt_output,
+            snig_output=args.snig_output,
             grpo_output=args.grpo_output,
             iw_output=args.iw_output,
         )

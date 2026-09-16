@@ -28,6 +28,8 @@ _PROGRESS_METHOD_ALIASES = {
     "pgt": "pgt",
     "cmt": "cmt",
     "grpo": "grpo",
+    "snig": "snig",
+    "snig-opd": "snig",
     "iw": "iw",
     "iw-opd": "iw",
 }
@@ -67,6 +69,12 @@ _PROGRESS_METHODS = {
         "slug": "grpo",
         "color": "tab:brown",
         "output_argument": "--grpo-output",
+    },
+    "snig": {
+        "label": "SNIG-OPD",
+        "slug": "snig_opd",
+        "color": "tab:pink",
+        "output_argument": "--snig-output",
     },
     "iw": {
         "label": "IW-OPD",
@@ -410,6 +418,9 @@ def _plot_token_score_distributions(
     rac_rows = (
         _read_token_stats(Path(outputs["rac"]).resolve()) if "rac" in outputs else []
     )
+    snig_rows = (
+        _read_token_stats(Path(outputs["snig"]).resolve()) if "snig" in outputs else []
+    )
     if ta_rows:
         fig, axis = plt.subplots(figsize=(8.5, 5.2))
         for row in _snapshot_rows(ta_rows):
@@ -476,6 +487,33 @@ def _plot_token_score_distributions(
         _save_figure(fig, path)
         plt.close(fig)
         result["rac_score_means"] = str(path)
+    if snig_rows:
+        fig, axes = plt.subplots(1, 4, figsize=(18, 4.8))
+        for axis, key, title in zip(
+            axes,
+            ("gain", "successor_utility", "s_SNIG", "w"),
+            ("Local PGT gain", "Successor utility", "SNIG score", "Allocated weight"),
+        ):
+            for row in _snapshot_rows(snig_rows):
+                payload = row.get("scores", {}).get(key)
+                if payload is None:
+                    continue
+                histogram = payload["histogram"]
+                edges = np.asarray(histogram["edges"], dtype=float)
+                counts = np.asarray(histogram["counts"], dtype=float)
+                counts /= max(counts.sum(), 1.0)
+                axis.stairs(counts, edges, linewidth=1.7, label=f"step {row['step']}")
+            axis.set_title(title)
+            axis.set_xlabel(key)
+            axis.grid(alpha=0.25)
+        axes[0].set_ylabel("Token fraction")
+        axes[-1].legend(fontsize=8)
+        fig.suptitle("SNIG-OPD token-score distributions")
+        fig.tight_layout()
+        path = plots_dir / "snig_token_score_distributions.png"
+        _save_figure(fig, path)
+        plt.close(fig)
+        result["snig_token_scores"] = str(path)
     return result
 
 
@@ -871,6 +909,7 @@ def plot_training_progress(
     pgt_output: str | Path | None = None,
     cmt_output: str | Path | None = None,
     grpo_output: str | Path | None = None,
+    snig_output: str | Path | None = None,
     iw_output: str | Path | None = None,
 ):
     """Plot the configured evaluation metric for any selected methods."""
@@ -884,6 +923,7 @@ def plot_training_progress(
         "pgt": pgt_output,
         "cmt": cmt_output,
         "grpo": grpo_output,
+        "snig": snig_output,
         "iw": iw_output,
     }
     histories = {
@@ -1082,6 +1122,7 @@ def plot_results(
     pgt_output: str | Path | None = None,
     cmt_output: str | Path | None = None,
     grpo_output: str | Path | None = None,
+    snig_output: str | Path | None = None,
     iw_output: str | Path | None = None,
 ):
     results_dir = Path(results_dir).resolve()
@@ -1166,6 +1207,8 @@ def plot_results(
         training_outputs["cmt"] = cmt_output
     if grpo_output is not None:
         training_outputs["grpo"] = grpo_output
+    if snig_output is not None:
+        training_outputs["snig"] = snig_output
     if iw_output is not None:
         training_outputs["iw"] = iw_output
     if opd_output is not None:
@@ -1207,6 +1250,11 @@ def plot_results(
         if iw_output is not None
         else None
     )
+    snig_history = (
+        Path(snig_output).resolve() / "eval_history.jsonl"
+        if snig_output is not None
+        else None
+    )
     if ta_history.is_file():
         progress_methods = ["ta"]
         if rac_history is not None and rac_history.is_file():
@@ -1217,6 +1265,8 @@ def plot_results(
             progress_methods.append("pgt")
         if cmt_history is not None and cmt_history.is_file():
             progress_methods.append("cmt")
+        if snig_history is not None and snig_history.is_file():
+            progress_methods.append("snig")
         if grpo_history is not None and grpo_history.is_file():
             progress_methods.append("grpo")
         if iw_history is not None and iw_history.is_file():
@@ -1233,6 +1283,7 @@ def plot_results(
                 pgt_output=pgt_output,
                 cmt_output=cmt_output,
                 grpo_output=grpo_output,
+                snig_output=snig_output,
                 iw_output=iw_output,
                 methods=progress_methods,
             )

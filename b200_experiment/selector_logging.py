@@ -77,6 +77,19 @@ class SelectedTokenLogger:
                         "learning_value",
                         "s_CMT",
                     ],
+                    "snig": [
+                        "gain",
+                        "transition_weight",
+                        "support_common_mass",
+                        "R",
+                        "M",
+                        "R_next",
+                        "M_next",
+                        "Phi",
+                        "successor_utility",
+                        "learning_value",
+                        "s_SNIG",
+                    ],
                 }[method],
             }
             if self.rank == 0:
@@ -137,6 +150,19 @@ class SelectedTokenLogger:
                 "sequential_gain",
                 "learning_value",
                 "s_CMT",
+            ),
+            "snig": (
+                "gain",
+                "transition_weight",
+                "support_common_mass",
+                "R",
+                "M",
+                "R_next",
+                "M_next",
+                "Phi",
+                "successor_utility",
+                "learning_value",
+                "s_SNIG",
             ),
         }[self.method]
         values = {
@@ -232,6 +258,25 @@ class TokenScoreStatsLogger:
                 "full_log_ratio_variance": (0.0, 100.0),
                 "full_common_mass": (0.0, 1.0),
             }
+        elif method == "snig":
+            self.ranges = {
+                "s_SNIG": (0.0, 10.0),
+                "learning_value": (0.0, 10.0),
+                "gain": (0.0, 10.0),
+                "successor_utility": (-1.0e-2, 1.0e-2),
+                "kernel_derivative": (-20.0, 20.0),
+                "transition_weight": (0.0, 1.0),
+                "support_common_mass": (0.0, 1.0),
+                "conditional_support_common_mass": (0.0, 1.0),
+                "support_coverage": (0.0, 1.0),
+                "teacher_deficit": (0.0, 1.0),
+                "R": (0.0, 1.0e4),
+                "M": (0.0, 8192.0),
+                "R_next": (0.0, 1.0e4),
+                "M_next": (0.0, 8192.0),
+                "Phi": (0.0, 5.0),
+                "w": (0.0, 20.0),
+            }
         else:
             raise ValueError(f"Unknown token-score method: {method!r}")
         if self.enabled:
@@ -267,6 +312,24 @@ class TokenScoreStatsLogger:
             "scope": "global_valid_response_tokens",
             "scores": {},
         }
+        if self.method == "snig":
+            payload["allocation"] = {
+                key: (
+                    float(value.item())
+                    if torch.is_tensor(value) and value.numel() == 1
+                    else value
+                )
+                for key in (
+                    "allocation_kl_epsilon",
+                    "allocation_kl_achieved",
+                    "allocation_inverse_temperature",
+                    "allocation_temperature",
+                    "successor_lambda",
+                    "successor_share",
+                )
+                for value in (diagnostics.get(key),)
+                if value is not None
+            }
         quantile_levels = torch.tensor(
             [0.05, 0.25, 0.50, 0.75, 0.95],
             device=next(

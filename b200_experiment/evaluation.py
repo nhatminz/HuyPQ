@@ -80,7 +80,17 @@ def ensure_extended_benchmark_specs(config: dict[str, Any]) -> dict[str, Any]:
                 for name in names
             ]
     return config
-MODEL_ORDER = ("Base", "OPD", "TA-OPD", "RAC", "PGT", "CMT-OPD", "GRPO", "IW-OPD")
+MODEL_ORDER = (
+    "Base",
+    "OPD",
+    "TA-OPD",
+    "RAC",
+    "PGT",
+    "CMT-OPD",
+    "SNIG-OPD",
+    "GRPO",
+    "IW-OPD",
+)
 
 
 def configured_benchmark_names(

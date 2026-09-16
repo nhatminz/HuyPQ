@@ -17,6 +17,9 @@ fi
 if [[ -f "${CMT_RUN_OUTPUT}/metrics.jsonl" ]]; then
   PLOT_ARGS+=(--cmt-output "${CMT_RUN_OUTPUT}")
 fi
+if [[ -f "${SNIG_RUN_OUTPUT}/metrics.jsonl" ]]; then
+  PLOT_ARGS+=(--snig-output "${SNIG_RUN_OUTPUT}")
+fi
 if [[ -f "${GRPO_RUN_OUTPUT}/metrics.jsonl" ]]; then
   PLOT_ARGS+=(--grpo-output "${GRPO_RUN_OUTPUT}")
 fi

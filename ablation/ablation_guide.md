@@ -1,7 +1,7 @@
 # Hướng dẫn CMT ablation và phân tích hyperparameter
 
 Thư mục này là lớp thí nghiệm bao quanh implementation CMT chính của
-BellmanOPD. Ablation không copy lại công thức và không thay distillation loss,
+Bellman2. Ablation không copy lại công thức và không thay distillation loss,
 optimizer, rollout, Gibbs/KL allocator hay evaluator.
 
 ## 1. Ba arm và pipeline
@@ -31,7 +31,7 @@ Script dùng `SCRIPT_DIR`, nên gọi được từ mọi current working direct
 các export ở đầu `ablation/scripts/train.sh`, hoặc truyền chúng trước lệnh:
 
 ```bash
-cd /mnt/hdd/nhatminh/OPD/BellmanOPD
+cd /mnt/hdd/nhatminh/OPD/Bellman2
 export CUDA_VISIBLE_DEVICES=0
 export STORAGE_ROOT=/workspace/storage-shared
 export STUDENT_MODEL="nlp/tungdd11/stable-on-policy-distillation/OPD/model/Qwen3-1.7B-Base"
@@ -308,7 +308,7 @@ Mặc định script sẽ đọc:
 ```bash
 PLOT_MODE=arms \
 RUN_NAMES="g_run_name g_x_run_name" \
-GD_CMT_OUTPUT_DIR="/workspace/storage-shared/nlp/minhpn19/BellmanOPD/outputs/cmt_.../cmt_opd" \
+GD_CMT_OUTPUT_DIR="/workspace/storage-shared/nlp/minhpn19/Bellman2/outputs/cmt_.../cmt_opd" \
 GD_CMT_RUN_NAME="cmt_..." \
   bash ablation/scripts/plot_ablation.sh
 ```

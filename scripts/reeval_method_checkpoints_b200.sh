@@ -7,10 +7,10 @@ usage() {
 Usage:
   bash scripts/reeval_method_checkpoints_b200.sh METHOD [RUN_NAME]
 
-METHOD may be: opd, ta-opd (or ta), rac, pgt, cmt, grpo, or iw.
+METHOD may be: opd, ta-opd (or ta), rac, pgt, cmt, snig, grpo, or iw.
 
 RUN_NAME is optional when the corresponding OPD_RUN_NAME, TA_RUN_NAME, RAC_RUN_NAME,
-PGT_RUN_NAME, CMT_RUN_NAME, GRPO_RUN_NAME, or IW_RUN_NAME environment variable is already set. To select an output directory
+PGT_RUN_NAME, CMT_RUN_NAME, SNIG_RUN_NAME, GRPO_RUN_NAME, or IW_RUN_NAME environment variable is already set. To select an output directory
 directly, omit RUN_NAME and set the matching *_OUTPUT_DIR variable.
 
 Examples:
@@ -52,6 +52,10 @@ case "${METHOD_INPUT,,}" in
   grpo|group-relative-policy-optimization|group_relative_policy_optimization)
     METHOD="grpo"
     if [[ -n "${RUN_NAME_INPUT}" ]]; then export GRPO_RUN_NAME="${RUN_NAME_INPUT}"; fi
+    ;;
+  snig|snig-opd|successor-normalized-information-geometry|successor_normalized_information_geometry)
+    METHOD="snig"
+    if [[ -n "${RUN_NAME_INPUT}" ]]; then export SNIG_RUN_NAME="${RUN_NAME_INPUT}"; fi
     ;;
   iw|iw-opd|importance-weighted-opd|importance_weighted_opd)
     METHOD="iw"

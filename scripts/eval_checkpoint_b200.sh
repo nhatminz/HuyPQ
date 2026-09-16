@@ -8,7 +8,7 @@ usage() {
 Usage:
   bash scripts/eval_checkpoint_b200.sh METHOD CHECKPOINT [OUTPUT_DIR] [extra CLI args]
 
-METHOD may be: opd, ta-opd (or ta), rac, pgt, cmt, grpo, or iw.
+METHOD may be: opd, ta-opd (or ta), rac, pgt, cmt, snig, grpo, or iw.
 
 Examples:
   bash scripts/eval_checkpoint_b200.sh opd outputs/run01/opd/checkpoint-000050
@@ -60,6 +60,12 @@ case "${METHOD_INPUT,,}" in
     HISTORY_METHOD="cmt"
     MODEL_NAME="CMT-OPD"
     METHOD_CONFIG="${CMT_CONFIG}"
+    ;;
+  snig|snig-opd|successor-normalized-information-geometry|successor_normalized_information_geometry)
+    METHOD_SLUG="snig_opd"
+    HISTORY_METHOD="snig"
+    MODEL_NAME="SNIG-OPD"
+    METHOD_CONFIG="${SNIG_CONFIG}"
     ;;
   grpo|group-relative-policy-optimization|group_relative_policy_optimization)
     METHOD_SLUG="grpo"

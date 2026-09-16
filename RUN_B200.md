@@ -1,9 +1,9 @@
-# Full B200 runbook
+# Full B200 runbook (Bellman2)
 
 ## Fresh environment
 
 ```bash
-cd /workspace/storage-shared/nlp/minhpn19/TA-OPD-B200
+cd /mnt/hdd/nhatminh/OPD/Bellman2
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
@@ -68,6 +68,7 @@ CUDA_VISIBLE_DEVICES=0,1 METHOD=opd bash scripts/smoke_test_fsdp_multigpu.sh
 CUDA_VISIBLE_DEVICES=0,1 METHOD=ta  bash scripts/smoke_test_fsdp_multigpu.sh
 CUDA_VISIBLE_DEVICES=0,1 METHOD=rac bash scripts/smoke_test_fsdp_multigpu.sh
 CUDA_VISIBLE_DEVICES=0,1 METHOD=pgt bash scripts/smoke_test_fsdp_multigpu.sh
+CUDA_VISIBLE_DEVICES=0,1 METHOD=snig bash scripts/smoke_test_fsdp_multigpu.sh
 
 # Bốn rank FSDP:
 CUDA_VISIBLE_DEVICES=0,1,2,3 METHOD=opd bash scripts/smoke_test_fsdp_multigpu.sh
@@ -83,7 +84,7 @@ CUDA_VISIBLE_DEVICES=0 python -m b200_experiment.cli preflight \
   --output results/preflight.json
 ```
 
-## Controlled full OPD, TA-OPD, Bellman-RAC, PGT và CMT runs
+## Controlled full OPD, TA-OPD, Bellman-RAC, PGT, CMT và SNIG runs
 
 Tạo một comparison ID rồi giữ mọi shared knob giống hệt nhau:
 
@@ -93,6 +94,7 @@ export OPD_RUN_NAME="opd_qwen3_8b_to_1p7b_base_${PAIR}"
 export TA_RUN_NAME="ta_qwen3_8b_to_1p7b_base_${PAIR}"
 export RAC_RUN_NAME="rac_bellman_qwen3_8b_to_1p7b_base_${PAIR}"
 export CMT_RUN_NAME="cmt_qwen3_8b_to_1p7b_base_${PAIR}"
+export SNIG_RUN_NAME="snig_qwen3_8b_to_1p7b_base_${PAIR}"
 
 export CUDA_VISIBLE_DEVICES=0,1
 export DISTRIBUTED_STRATEGY=fsdp
@@ -113,6 +115,9 @@ export RAC_BETA=2.0
 export CMT_ALLOCATION_KL=0.5
 export CMT_GAMMA=1.0
 export CMT_SUCCESSOR_LAMBDA=1.0
+export SNIG_ALLOCATION_KL=0.5
+export SNIG_GAMMA=1.0
+export SNIG_SUCCESSOR_LAMBDA=1.0
 export EVAL_INTERVAL=50
 export SAVE_INTERVAL=50
 export SEED=42
@@ -121,6 +126,8 @@ RUN_NAME="$OPD_RUN_NAME" bash scripts/train_opd_b200.sh
 RUN_NAME="$TA_RUN_NAME"  bash scripts/train_ta_b200.sh
 RUN_NAME="$RAC_RUN_NAME" bash scripts/train_rac_b200.sh
 RUN_NAME="$CMT_RUN_NAME" bash scripts/train_cmt_b200.sh
+# Main SNIG run (optional; set RUN_SNIG_TRAIN=true in train_all for workflows).
+RUN_NAME="$SNIG_RUN_NAME" bash scripts/train_snig_b200.sh
 ```
 
 `BATCH_SIZE` và `PPO_MINI_BATCH_SIZE` là global, không đổi theo world size. Ví dụ PPO batch 16
@@ -457,7 +464,7 @@ REEVAL_TEMPERATURE=1 REEVAL_NUM_RESPONSES=1 \
   bash scripts/reeval_method_checkpoints_b200.sh opd "$OPD_RUN_NAME"
 ```
 
-Đổi `opd` thành `ta`, `rac`, `pgt` hoặc `cmt` và truyền run name tương ứng. Với avg@8, đặt
+Đổi `opd` thành `ta`, `rac`, `pgt`, `cmt` hoặc `snig` và truyền run name tương ứng. Với avg@8, đặt
 `REEVAL_NUM_RESPONSES=8`. Nếu đã export `OPD_RUN_NAME`, có thể bỏ đối số run name. Cũng có thể
 chỉ trực tiếp output không theo layout mặc định:
 
@@ -485,6 +492,11 @@ OPD_RUN_NAME="$OPD_RUN_NAME" TA_RUN_NAME="$TA_RUN_NAME" RAC_RUN_NAME="$RAC_RUN_N
 OPD_RUN_NAME="$OPD_RUN_NAME" TA_RUN_NAME="$TA_RUN_NAME" RAC_RUN_NAME="$RAC_RUN_NAME" \
   PGT_RUN_NAME="$PGT_RUN_NAME" CMT_RUN_NAME="$CMT_RUN_NAME" \
   PLOT_METHODS="opd ta rac pgt cmt" bash scripts/plot_training_progress.sh
+
+# Khi đã train SNIG:
+OPD_RUN_NAME="$OPD_RUN_NAME" TA_RUN_NAME="$TA_RUN_NAME" RAC_RUN_NAME="$RAC_RUN_NAME" \
+  PGT_RUN_NAME="$PGT_RUN_NAME" CMT_RUN_NAME="$CMT_RUN_NAME" SNIG_RUN_NAME="$SNIG_RUN_NAME" \
+  PLOT_METHODS="opd ta rac pgt cmt snig" bash scripts/plot_training_progress.sh
 ```
 
 So sánh hai phương pháp bất kỳ (đổi danh sách theo nhu cầu):

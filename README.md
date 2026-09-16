@@ -1,6 +1,6 @@
-# Pure OPD vs TA-OPD vs CMT vs GRPO trên NVIDIA B200
+# Pure OPD vs TA-OPD vs CMT vs SNIG vs GRPO trên NVIDIA B200
 
-Project độc lập này hỗ trợ bốn baseline chính trên cùng student Qwen3-1.7B-Base:
+Project độc lập này hỗ trợ các baseline chính trên cùng student Qwen3-1.7B-Base:
 
 - **OPD thuần**: mọi valid response token có uniform weight `1`.
 - **TA-OPD gốc**: local teachability và hard top-`rho` token budget.
@@ -16,12 +16,17 @@ Project độc lập này hỗ trợ bốn baseline chính trên cùng student Q
   weight bằng global KL-constrained allocation. CMT
   không claim là causal task value hay teacher-policy value; xem
   [`CMT_REFINEMENT_DECISION.md`](CMT_REFINEMENT_DECISION.md) cho formulation hiện hành.
+- **SNIG-OPD (Successor-Normalized Information Geometry)**: giữ local PGT gain và bounded
+  truncated common-mass transition của CMT, nhưng dùng đạo hàm của
+  `Phi=log1p(R/M)` để chuẩn hoá successor term theo suffix mass. SNIG dùng allocator
+  KL-constrained toàn batch, không critic/counterfactual rollout; `lambda=0` là arm
+  PGT-Gibbs để kiểm tra riêng giả thuyết sequential.
 - **GRPO thuần (Group Relative Policy Optimization)**: teacher-free; mỗi prompt sinh `G` response,
   chấm outcome reward, chuẩn hoá advantage trong group và tối ưu clipped PPO surrogate. GRPO chỉ
   tải student, không tải teacher/reference model. Bellman-RAC/PGT vẫn còn trong code để đọc và
   tái lập các run legacy.
 
-OPD/TA/CMT dùng chung data order, vLLM rollout, teacher scoring, **Top-K OPD core**, optimizer,
+OPD/TA/CMT/SNIG dùng chung data order, vLLM rollout, teacher scoring, **Top-K OPD core**, optimizer,
 checkpoint và evaluation; GRPO dùng data order, rollout, optimizer, checkpoint và evaluation chung
 nhưng không có teacher/Top-K distillation core. Core được port
 từ [`thunlp/OPD`](https://github.com/thunlp/OPD) tại commit
@@ -198,6 +203,7 @@ configs/qwen3_b200_ta.yaml
 configs/qwen3_b200_rac.yaml
 configs/qwen3_b200_pgt.yaml
 configs/qwen3_b200_cmt.yaml
+configs/qwen3_b200_snig.yaml
 ```
 
 Các method config chỉ override `experiment.method` và `experiment.output_dir`; toàn bộ model, data,
@@ -210,6 +216,7 @@ MAX_PROMPT_LENGTH OVERLONG_PROMPT_POLICY MAX_RESPONSE_LENGTH TOP_K TA_RHO PGT_RH
 PPO_MINI_BATCH_SIZE MICRO_BATCH_SIZE_PER_GPU
 RAC_GAMMA RAC_W_MIN RAC_BETA RAC_SCAN_BACKEND
 CMT_ALLOCATION_KL CMT_GAMMA CMT_SUCCESSOR_LAMBDA CMT_FULL_VOCAB_DIAGNOSTICS
+SNIG_ALLOCATION_KL SNIG_GAMMA SNIG_SUCCESSOR_LAMBDA
 EVAL_INTERVAL SAVE_INTERVAL LOG_INTERVAL SEED
 ```
 
@@ -253,7 +260,7 @@ Dùng checkpoint cụ thể hoặc `RESUME=auto` cùng tên run cũ.
 
 Eval thủ công một checkpoint bất kỳ dùng
 `scripts/eval_checkpoint_b200.sh METHOD CHECKPOINT [OUTPUT_DIR]`, trong đó `METHOD` là `opd`,
-`ta-opd`, `rac`, `pgt` hoặc `cmt`. Với checkpoint nằm dưới `outputs/<run>/<method>/` và bỏ qua
+`ta-opd`, `rac`, `pgt`, `cmt` hoặc `snig`. Với checkpoint nằm dưới `outputs/<run>/<method>/` và bỏ qua
 `OUTPUT_DIR`, artifact chi tiết được ghi dưới `<method-output>/checkpoint_eval/` và kết quả được
 upsert vào `<method-output>/eval_history.jsonl` (cập nhật cùng row `(step, method)` khi chạy lại),
 đồng thời cập nhật `eval_metrics.csv`. Ngoài summary và prediction theo từng dataset, evaluator
@@ -267,7 +274,7 @@ histogram/quantile và bounded scalar sample vẫn luôn đủ cho plots. Có th
 Plot launch tạo một folder timestamp mới `results/.../plots/plot_YYYYMMDD_HHMMSS/`, sinh PNG và PDF
 cho avg@8, loss, TA score distribution, Bellman-RAC `g/V/w`, CMT support/excess diagnostics,
 và mean alignment/V/weight. `plot_training_progress.sh` hỗ trợ
-`PLOT_METHODS='opd ta rac pgt cmt'` với một hoặc nhiều method.
+`PLOT_METHODS='opd ta cmt snig'` với một hoặc nhiều method (legacy rac/pgt vẫn được hỗ trợ).
 Một method tạo sáu đường benchmark (thêm GPQA-Diamond và AMC23); từ hai method trở lên tạo sáu subplot benchmark,
 mỗi subplot có một đường cho từng method. `PLOT_METHOD=both` vẫn tương thích và có nghĩa TA+RAC.
 

@@ -96,6 +96,18 @@ CMT_TAGS = {
     "cmt/weight_max": ("w", "max"),
 }
 
+SNIG_TAGS = {
+    "snig/local_pgt_mean": ("gain", "mean"),
+    "snig/successor_utility_mean": ("successor_utility", "mean"),
+    "snig/successor_utility_abs_q95": ("successor_utility", "q95"),
+    "snig/Phi_mean": ("Phi", "mean"),
+    "snig/score_mean": ("s_SNIG", "mean"),
+    "snig/score_std": ("s_SNIG", "std"),
+    "snig/weight_std": ("w", "std"),
+    "snig/weight_max": ("w", "max"),
+    "snig/transition_weight_mean": ("transition_weight", "mean"),
+}
+
 GRPO_TAGS = {
     "grpo/reward_mean": ("grpo_reward_mean",),
     "grpo/reward_std": ("grpo_reward_std",),
@@ -172,6 +184,28 @@ def production_tensorboard_metrics(
                 for tag, path in CMT_TAGS.items()
             }
         )
+    elif method == "snig":
+        valid_tokens = max(int(selector["valid_tokens"]), 1)
+        selected["snig/effective_token_fraction"] = float(
+            selector["effective_sample_size"] / valid_tokens
+        )
+        selected.update(
+            {
+                tag: _selector_value(selector, path)
+                for tag, path in SNIG_TAGS.items()
+            }
+        )
+        for key, tag in (
+            ("allocation_kl_epsilon", "snig/allocation_kl"),
+            ("allocation_kl_achieved", "snig/allocation_kl_achieved"),
+            ("allocation_inverse_temperature", "snig/inverse_temperature"),
+            ("allocation_temperature", "snig/allocation_temperature"),
+            ("successor_lambda", "snig/successor_lambda"),
+            ("successor_share", "snig/successor_share"),
+        ):
+            value = selector.get(key)
+            if value is not None:
+                selected[tag] = float(value)
     elif method == "grpo":
         selected.update(
             {

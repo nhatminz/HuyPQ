@@ -8,6 +8,7 @@ from .rac_selector import (
 from .ta_selector import TASelector
 from .pgt_selector import PGTOutput, PGTSelector
 from .cmt_selector import CMTSelector, kl_constrained_allocation
+from .snig_selector import SNIGSelector
 
 __all__ = [
     "OPDSelector",
@@ -16,6 +17,7 @@ __all__ = [
     "PGTOutput",
     "PGTSelector",
     "CMTSelector",
+    "SNIGSelector",
     "kl_constrained_allocation",
     "bellman_parallel_scan",
     "bellman_reference_scan",

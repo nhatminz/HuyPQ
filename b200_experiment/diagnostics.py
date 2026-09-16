@@ -137,6 +137,35 @@ def selector_summary(
             "full_log_ratio_variance",
             "full_common_mass",
         )
+    elif method == "snig":
+        keys = (
+            "gain",
+            "s_PGT",
+            "support_common_mass",
+            "conditional_support_common_mass",
+            "alignment",
+            "transition_weight",
+            "support_coverage",
+            "coverage_correction",
+            "teacher_deficit",
+            "marginal_flux",
+            "kernel_derivative",
+            "common_mass_derivative",
+            "R",
+            "M",
+            "R_next",
+            "M_next",
+            "successor_excess",
+            "Phi",
+            "successor_utility",
+            "learning_value",
+            "s_SNIG",
+            "w",
+            "student_union_mass",
+            "teacher_union_mass",
+            "teacher_tail_mass",
+            "support_width",
+        )
     else:
         raise ValueError(f"Unknown selector-summary method: {method!r}")
     result: dict[str, Any] = {}
@@ -155,7 +184,7 @@ def selector_summary(
         result["selection_threshold"] = float(diagnostics["s_TA"][selected].min())
     if method == "pgt" and selected_count:
         result["selection_threshold"] = float(diagnostics["s_PGT"][selected].min())
-    if method in {"opd", "rac", "cmt"} and "w" in diagnostics:
+    if method in {"opd", "rac", "cmt", "snig"} and "w" in diagnostics:
         weights = diagnostics["w"][valid_mask].detach().float()
         weight_sum = weights.sum()
         result.update(

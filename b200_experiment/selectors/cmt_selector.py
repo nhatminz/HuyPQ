@@ -66,6 +66,128 @@ def kl_constrained_allocation(
     return probabilities * count, inverse_temperature, achieved_kl
 
 
+@torch.no_grad()
+def _shared_kernel_samples(
+    pgt_support: PGTOutput,
+    sampled_token_ids: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Build the support/local and sampled-action quantities shared by CMT/SNIG.
+
+    The local PGT geometry lives on the conditional Top-K union simplex.  The
+    sequential transition uses the original (unnormalized) student/teacher
+    masses on that same union, so ``acceptance`` is the bounded estimator of
+    the truncated common-mass kernel.  Keeping this construction in one place
+    prevents SNIG from silently drifting from CMT at the support boundary.
+    """
+    expected_shape = valid_mask.shape
+    if valid_mask.ndim != 2:
+        raise ValueError("CMT/SNIG valid_mask must have shape [batch, time]")
+    if sampled_token_ids.shape != expected_shape:
+        raise ValueError("Sampled token IDs must align with valid_mask")
+    if pgt_support.candidate_ids.shape[:2] != expected_shape:
+        raise ValueError("Support must align with valid_mask")
+
+    valid = valid_mask.bool()
+    candidate_ids = pgt_support.candidate_ids
+    support_mask = pgt_support.support_mask.bool()
+    student_cond = pgt_support.student_candidate_log_probs.detach().float()
+    teacher_cond = pgt_support.teacher_candidate_log_probs.detach().float()
+    support_p = torch.where(
+        support_mask, student_cond.exp(), torch.zeros_like(student_cond)
+    )
+    support_q = torch.where(
+        support_mask, teacher_cond.exp(), torch.zeros_like(teacher_cond)
+    )
+    support_r = torch.where(
+        support_mask, teacher_cond - student_cond, torch.zeros_like(student_cond)
+    )
+    mean_r = (support_p * support_r).sum(dim=-1)
+    g = pgt_support.diagnostics["gain"].detach().float().clamp_min(0.0)
+    g = torch.where(valid, g, torch.zeros_like(g))
+
+    student_mass = pgt_support.diagnostics["student_union_mass"].detach().float()
+    teacher_mass = pgt_support.diagnostics["teacher_union_mass"].detach().float()
+    tiny = torch.finfo(torch.float32).tiny
+    student_mass = student_mass.clamp_min(tiny)
+    teacher_mass = teacher_mass.clamp_min(tiny)
+    log_mass_ratio = torch.log(teacher_mass) - torch.log(student_mass)
+    original_p = support_p * student_mass.unsqueeze(-1)
+    original_q = support_q * teacher_mass.unsqueeze(-1)
+    original_r = support_r + log_mass_ratio.unsqueeze(-1)
+
+    sampled_ids = sampled_token_ids.long().unsqueeze(-1)
+    in_support_matrix = candidate_ids.eq(sampled_ids) & support_mask
+    in_support = in_support_matrix.any(dim=-1) & valid
+    # IDs are unique on the union support, so summing selects one slot.
+    sampled_cond_student = torch.where(
+        in_support_matrix, student_cond, torch.zeros_like(student_cond)
+    ).sum(dim=-1)
+    sampled_cond_teacher = torch.where(
+        in_support_matrix, teacher_cond, torch.zeros_like(teacher_cond)
+    ).sum(dim=-1)
+    sampled_cond_r = sampled_cond_teacher - sampled_cond_student
+    sampled_r = sampled_cond_r + torch.where(
+        in_support, log_mass_ratio, torch.zeros_like(log_mass_ratio)
+    )
+    acceptance = torch.where(
+        in_support,
+        torch.exp(sampled_r.clamp(max=0.0)),
+        torch.zeros_like(sampled_r),
+    )
+    transition_weight = acceptance
+    coverage_correction = torch.where(
+        in_support, torch.ones_like(student_mass), torch.zeros_like(student_mass)
+    )
+    # p°<q° is the active derivative branch.  On this branch q°/p°>1, hence
+    # acceptance c=1 (up to floating-point tolerance), as required by the
+    # common-mass derivative convention.
+    teacher_deficit = in_support & sampled_r.gt(0.0)
+    marginal_flux = torch.where(
+        teacher_deficit,
+        sampled_cond_r - mean_r,
+        torch.zeros_like(sampled_cond_r),
+    )
+    support_common_mass = torch.minimum(original_p, original_q).sum(dim=-1)
+    conditional_support_common_mass = torch.minimum(support_p, support_q).sum(dim=-1)
+    common_mass_derivative = torch.where(
+        support_mask & original_p.lt(original_q),
+        original_p * (support_r - mean_r.unsqueeze(-1)),
+        torch.zeros_like(original_p),
+    ).sum(dim=-1)
+    return {
+        "valid": valid,
+        "candidate_ids": candidate_ids,
+        "support_mask": support_mask,
+        "student_cond": student_cond,
+        "teacher_cond": teacher_cond,
+        "support_p": support_p,
+        "support_q": support_q,
+        "support_r": support_r,
+        "mean_r": mean_r,
+        "g": g,
+        "student_mass": student_mass,
+        "teacher_mass": teacher_mass,
+        "log_mass_ratio": log_mass_ratio,
+        "original_p": original_p,
+        "original_q": original_q,
+        "original_r": original_r,
+        "in_support": in_support,
+        "sampled_cond_student": sampled_cond_student,
+        "sampled_cond_teacher": sampled_cond_teacher,
+        "sampled_cond_r": sampled_cond_r,
+        "sampled_r": sampled_r,
+        "acceptance": acceptance,
+        "transition_weight": transition_weight,
+        "coverage_correction": coverage_correction,
+        "teacher_deficit": teacher_deficit,
+        "marginal_flux": marginal_flux,
+        "support_common_mass": support_common_mass,
+        "conditional_support_common_mass": conditional_support_common_mass,
+        "common_mass_derivative": common_mass_derivative,
+    }
+
+
 class CMTSelector:
     """Support-matched, local-excess Coupled Marginal Teachability.
 
@@ -144,90 +266,35 @@ class CMTSelector:
         intentionally killed rather than reweighted into the conditional
         simplex.
         """
-        expected_shape = valid_mask.shape
-        if valid_mask.ndim != 2:
-            raise ValueError("CMT valid_mask must have shape [batch, time]")
-        if sampled_token_ids.shape != expected_shape:
-            raise ValueError("CMT sampled token IDs must align with valid_mask")
-        if pgt_support.candidate_ids.shape[:2] != expected_shape:
-            raise ValueError("CMT support must align with valid_mask")
-
-        valid = valid_mask.bool()
-        candidate_ids = pgt_support.candidate_ids
-        support_mask = pgt_support.support_mask.bool()
-        student_cond = pgt_support.student_candidate_log_probs.detach().float()
-        teacher_cond = pgt_support.teacher_candidate_log_probs.detach().float()
-        support_p = torch.where(
-            support_mask, student_cond.exp(), torch.zeros_like(student_cond)
+        shared = _shared_kernel_samples(
+            pgt_support, sampled_token_ids, valid_mask
         )
-        support_q = torch.where(
-            support_mask, teacher_cond.exp(), torch.zeros_like(teacher_cond)
-        )
-        support_r = torch.where(
-            support_mask, teacher_cond - student_cond, torch.zeros_like(student_cond)
-        )
-        mean_r = (support_p * support_r).sum(dim=-1)
-        g = pgt_support.diagnostics["gain"].detach().float().clamp_min(0.0)
-        g = torch.where(valid, g, torch.zeros_like(g))
-
-        student_mass = pgt_support.diagnostics["student_union_mass"].detach().float()
-        teacher_mass = pgt_support.diagnostics["teacher_union_mass"].detach().float()
-        tiny = torch.finfo(torch.float32).tiny
-        student_mass = student_mass.clamp_min(tiny)
-        teacher_mass = teacher_mass.clamp_min(tiny)
-        log_mass_ratio = torch.log(teacher_mass) - torch.log(student_mass)
-        original_p = support_p * student_mass.unsqueeze(-1)
-        original_q = support_q * teacher_mass.unsqueeze(-1)
-        original_r = support_r + log_mass_ratio.unsqueeze(-1)
-
-        sampled_ids = sampled_token_ids.long().unsqueeze(-1)
-        in_support_matrix = candidate_ids.eq(sampled_ids) & support_mask
-        in_support = in_support_matrix.any(dim=-1) & valid
-        # IDs are unique on support, so summing selects exactly one slot.
-        sampled_cond_student = torch.where(
-            in_support_matrix, student_cond, torch.zeros_like(student_cond)
-        ).sum(dim=-1)
-        sampled_cond_teacher = torch.where(
-            in_support_matrix, teacher_cond, torch.zeros_like(teacher_cond)
-        ).sum(dim=-1)
-        sampled_cond_r = sampled_cond_teacher - sampled_cond_student
-        sampled_r = sampled_cond_r + torch.where(
-            in_support, log_mass_ratio, torch.zeros_like(log_mass_ratio)
-        )
-        acceptance = torch.where(
-            in_support,
-            torch.exp(sampled_r.clamp(max=0.0)),
-            torch.zeros_like(sampled_r),
-        )
-        # The raw truncated kernel is estimated directly under Y~p.  There is
-        # deliberately no 1 / P_student(U) importance factor.
-        transition_weight = acceptance
-        # Kept as a compatibility diagnostic for older JSON consumers.  It is
-        # identically one on an in-support transition and is never applied as
-        # an inverse-coverage correction.
-        coverage_correction = torch.where(
-            in_support, torch.ones_like(student_mass), torch.zeros_like(student_mass)
-        )
-        # The active branch of min(p(a), q(a)) is determined by original mass,
-        # not by conditional p_U/q_U.  The tangent itself remains the local
-        # conditional mirror tangent p_U * (r_U - E_pU[r_U]).
-        teacher_deficit = in_support & sampled_r.gt(0.0)
-        marginal_flux = torch.where(
-            teacher_deficit,
-            sampled_cond_r - mean_r,
-            torch.zeros_like(sampled_cond_r),
-        )
-
-        # This is the part that can be Rao-Blackwellized with no successor
-        # evaluations.  The action-conditioned future term cannot be summed
-        # over U without evaluating those counterfactual successors.
-        support_common_mass = torch.minimum(original_p, original_q).sum(dim=-1)
-        conditional_support_common_mass = torch.minimum(support_p, support_q).sum(dim=-1)
-        common_mass_derivative = torch.where(
-            support_mask & original_p.lt(original_q),
-            original_p * (support_r - mean_r.unsqueeze(-1)),
-            torch.zeros_like(original_p),
-        ).sum(dim=-1)
+        valid = shared["valid"]
+        candidate_ids = shared["candidate_ids"]
+        support_mask = shared["support_mask"]
+        student_cond = shared["student_cond"]
+        teacher_cond = shared["teacher_cond"]
+        support_p = shared["support_p"]
+        support_q = shared["support_q"]
+        support_r = shared["support_r"]
+        mean_r = shared["mean_r"]
+        g = shared["g"]
+        student_mass = shared["student_mass"]
+        teacher_mass = shared["teacher_mass"]
+        original_p = shared["original_p"]
+        original_q = shared["original_q"]
+        original_r = shared["original_r"]
+        in_support = shared["in_support"]
+        sampled_cond_r = shared["sampled_cond_r"]
+        sampled_r = shared["sampled_r"]
+        acceptance = shared["acceptance"]
+        transition_weight = shared["transition_weight"]
+        coverage_correction = shared["coverage_correction"]
+        teacher_deficit = shared["teacher_deficit"]
+        marginal_flux = shared["marginal_flux"]
+        support_common_mass = shared["support_common_mass"]
+        conditional_support_common_mass = shared["conditional_support_common_mass"]
+        common_mass_derivative = shared["common_mass_derivative"]
 
         # Raw cumulative return is retained only as a diagnostic.  The score
         # uses the local-baseline excess derivative below to remove

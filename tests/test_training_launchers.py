@@ -16,6 +16,7 @@ TRAIN_SCRIPTS = (
     "train_cmt_b200.sh",
     "train_grpo_b200.sh",
     "train_iw_b200.sh",
+    "train_snig_b200.sh",
 )
 
 
@@ -94,6 +95,7 @@ class TrainingLauncherTests(unittest.TestCase):
         )
         self.assertIn("grpo) add_plot_method grpo ;;", content)
         self.assertIn("iw|iw-opd) add_plot_method iw ;;", content)
+        self.assertIn("snig|snig-opd) add_plot_method snig ;;", content)
 
     def test_common_config_accepts_new_model_and_data_aliases(self):
         environment = dict(os.environ)

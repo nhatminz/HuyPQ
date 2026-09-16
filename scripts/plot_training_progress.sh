@@ -40,11 +40,12 @@ for requested in "${REQUESTED_METHODS[@]}"; do
     rac|bellman-rac) add_plot_method rac ;;
     pgt|projected-gradient-teachability) add_plot_method pgt ;;
     cmt|coupled-marginal-teachability) add_plot_method cmt ;;
+    snig|snig-opd) add_plot_method snig ;;
     grpo) add_plot_method grpo ;;
     iw|iw-opd) add_plot_method iw ;;
     *)
       echo "Unknown plot method: ${requested}" >&2
-      echo "Use PLOT_METHODS='opd ta cmt grpo iw' (legacy rac/pgt also supported)." >&2
+      echo "Use PLOT_METHODS='opd ta cmt snig grpo iw' (legacy rac/pgt also supported)." >&2
       exit 2
       ;;
   esac
@@ -111,6 +112,15 @@ for selected in "${SELECTED_METHODS[@]}"; do
       METHOD_LABELS+=("GRPO")
       if [[ "${#SELECTED_METHODS[@]}" -gt 1 ]]; then
         require_file "${GRPO_RUN_OUTPUT}/metrics.jsonl"
+      fi
+      ;;
+    snig)
+      require_file "${SNIG_RUN_OUTPUT}/eval_history.jsonl"
+      PLOT_ARGS+=(--snig-output "${SNIG_RUN_OUTPUT}")
+      RUN_NAMES+=("${SNIG_RUN_NAME}")
+      METHOD_LABELS+=("SNIG-OPD")
+      if [[ "${#SELECTED_METHODS[@]}" -gt 1 ]]; then
+        require_file "${SNIG_RUN_OUTPUT}/metrics.jsonl"
       fi
       ;;
     iw)

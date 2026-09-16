@@ -7,6 +7,7 @@ from b200_experiment.tensorboard_logging import (
     BASE_TAGS,
     RAC_TAGS,
     CMT_TAGS,
+    SNIG_TAGS,
     TA_TAGS,
     TensorBoardLogger,
     production_tensorboard_metrics,
@@ -53,6 +54,25 @@ def _cmt_metrics() -> dict:
     return values
 
 
+def _snig_metrics() -> dict:
+    values = _metrics()
+    values["selector"].update(
+        gain={"mean": 0.4},
+        successor_utility={"mean": 0.01, "q95": 0.03},
+        Phi={"mean": 0.8},
+        s_SNIG={"mean": 0.41, "std": 0.02},
+        transition_weight={"mean": 0.7},
+        w={"mean": 1.0, "std": 0.2, "max": 2.0},
+        allocation_kl_epsilon=0.5,
+        allocation_kl_achieved=0.5,
+        allocation_inverse_temperature=2.0,
+        allocation_temperature=0.5,
+        successor_lambda=1.0,
+        successor_share=0.025,
+    )
+    return values
+
+
 class TensorBoardMetricTests(unittest.TestCase):
     def test_opd_writes_all_common_diagnostic_tags(self):
         selected = production_tensorboard_metrics(_metrics(), "opd")
@@ -94,6 +114,22 @@ class TensorBoardMetricTests(unittest.TestCase):
             set(BASE_TAGS) | set(CMT_TAGS) | {"cmt/effective_token_fraction"},
         )
         self.assertEqual(selected["cmt/common_mass_mean"], 0.8)
+
+    def test_snig_writes_normalized_successor_and_allocation_diagnostics(self):
+        selected = production_tensorboard_metrics(_snig_metrics(), "snig")
+        self.assertEqual(
+            set(selected),
+            set(BASE_TAGS) | set(SNIG_TAGS) | {
+                "snig/effective_token_fraction",
+                "snig/allocation_kl",
+                "snig/allocation_kl_achieved",
+                "snig/inverse_temperature",
+                "snig/allocation_temperature",
+                "snig/successor_lambda",
+                "snig/successor_share",
+            },
+        )
+        self.assertEqual(selected["snig/successor_share"], 0.025)
 
     def test_tensorboard_writer_receives_expanded_metrics(self):
         logger = object.__new__(TensorBoardLogger)

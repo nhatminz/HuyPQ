@@ -16,10 +16,11 @@ for method in "${REQUESTED_METHODS[@]}"; do
     rac|bellman-rac|bellman_rac) canonical="rac" ;;
     pgt|projected-gradient-teachability|projected_gradient_teachability) canonical="pgt" ;;
     cmt|coupled-marginal-teachability|coupled_marginal_teachability) canonical="cmt" ;;
+    snig|snig-opd|successor-normalized-information-geometry|successor_normalized_information_geometry) canonical="snig" ;;
     grpo|group-relative-policy-optimization|group_relative_policy_optimization) canonical="grpo" ;;
     iw|iw-opd|importance-weighted-opd|importance_weighted_opd) canonical="iw" ;;
     *)
-      echo "Unknown REEVAL_METHODS entry: ${method}; use opd, ta, rac, pgt, cmt, grpo, or iw" >&2
+      echo "Unknown REEVAL_METHODS entry: ${method}; use opd, ta, rac, pgt, cmt, snig, grpo, or iw" >&2
       exit 2
       ;;
   esac
@@ -28,7 +29,7 @@ for method in "${REQUESTED_METHODS[@]}"; do
   fi
 done
 if (( ${#SELECTED_METHODS[@]} == 0 )); then
-  echo "REEVAL_METHODS must select at least one of: opd, ta, rac, pgt, cmt, grpo, iw" >&2
+  echo "REEVAL_METHODS must select at least one of: opd, ta, rac, pgt, cmt, snig, grpo, iw" >&2
   exit 2
 fi
 
@@ -69,6 +70,7 @@ for method in "${SELECTED_METHODS[@]}"; do
     rac) path="${RAC_RUN_OUTPUT}" ;;
     pgt) path="${PGT_RUN_OUTPUT}" ;;
     cmt) path="${CMT_RUN_OUTPUT}" ;;
+    snig) path="${SNIG_RUN_OUTPUT}" ;;
     grpo) path="${GRPO_RUN_OUTPUT}" ;;
     iw) path="${IW_RUN_OUTPUT}" ;;
   esac
