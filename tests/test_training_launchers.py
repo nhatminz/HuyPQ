@@ -97,6 +97,24 @@ class TrainingLauncherTests(unittest.TestCase):
         self.assertIn("iw|iw-opd) add_plot_method iw ;;", content)
         self.assertIn("snig|snig-opd) add_plot_method snig ;;", content)
 
+    def test_cross_repository_plot_launcher_separates_output_roots(self):
+        content = (REPO_ROOT / "scripts" / "plot_cross_repo.sh").read_text(
+            encoding="utf-8"
+        )
+        for variable in (
+            "MINHPN19_OUTPUT_ROOT",
+            "HUYPQ_OUTPUT_ROOT",
+            "HUYPQ_RESULTS_ROOT",
+            "OPD_OUTPUT_DIR",
+            "TA_OUTPUT_DIR",
+            "CMT_OUTPUT_DIR",
+            "SNIG_OUTPUT_DIR",
+            "RESULTS_DIR",
+        ):
+            with self.subTest(variable=variable):
+                self.assertIn(variable, content)
+        self.assertIn('PLOT_MODE="${PLOT_MODE:-progress}"', content)
+
     def test_common_config_accepts_new_model_and_data_aliases(self):
         environment = dict(os.environ)
         environment.update(

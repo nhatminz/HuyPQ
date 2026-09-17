@@ -447,6 +447,49 @@ CMT_RUN_NAME="$CMT_RUN_NAME" SNIG_RUN_NAME="$SNIG_RUN_NAME" \
   bash scripts/plot_training_progress.sh --plot-name opd_ta_cmt_snig
 ```
 
+### Vẽ SNIG từ repository HuyPQ với OPD/TA/CMT ở minhpn19
+
+Khi SNIG được train trong project HuyPQ nhưng các baseline cũ nằm trong output của
+`minhpn19/BellmanOPD`, không dùng `RUN_NAME` để suy luận chung một `outputs/`.
+Dùng launcher cross-repository; script tự trỏ từng method tới đúng root và ghi
+ảnh vào `HuyPQ-main/results`:
+
+```bash
+cd /mnt/hdd/nhatminh/OPD/Bellman2
+
+MINHPN19_OUTPUT_ROOT=/workspace/storage-shared/nlp/minhpn19/BellmanOPD/outputs \
+HUYPQ_OUTPUT_ROOT=/workspace/storage-shared/nlp/huypq51/projects/HuyPQ-main/outputs \
+HUYPQ_RESULTS_ROOT=/workspace/storage-shared/nlp/huypq51/projects/HuyPQ-main/results \
+OPD_RUN_NAME="opd_..." \
+TA_RUN_NAME="ta_..." \
+CMT_RUN_NAME="cmt_..." \
+SNIG_RUN_NAME="snig_..." \
+PLOT_METHODS="opd ta cmt snig" \
+  bash scripts/plot_cross_repo.sh --plot-name opd_ta_cmt_snig
+```
+
+Mặc định script dùng các thư mục:
+
+```text
+minhpn19/BellmanOPD/outputs/<run>/opd
+minhpn19/BellmanOPD/outputs/<run>/ta_opd
+minhpn19/BellmanOPD/outputs/<run>/cmt_opd
+huypq51/HuyPQ-main/outputs/<run>/snig_opd
+```
+
+Nếu layout thực tế khác, truyền trực tiếp `OPD_OUTPUT_DIR`, `TA_OUTPUT_DIR`,
+`CMT_OUTPUT_DIR` hoặc `SNIG_OUTPUT_DIR`; các giá trị này được ưu tiên hơn root
+và run name. `RESULTS_DIR` cũng có thể truyền trực tiếp để đặt ảnh vào một
+folder comparison cụ thể. Chế độ mặc định là plot theo training progress; để
+vẽ kết quả aggregate/final dùng `PLOT_MODE=final`:
+
+```bash
+PLOT_MODE=final \
+OPD_RUN_NAME="opd_..." TA_RUN_NAME="ta_..." CMT_RUN_NAME="cmt_..." \
+SNIG_RUN_NAME="snig_..." PLOT_METHODS="opd ta cmt snig" \
+  bash scripts/plot_cross_repo.sh --plot-name final_opd_ta_cmt_snig
+```
+
 ### Bellman-RAC và PGT (nếu cần baseline đầy đủ)
 
 ```bash
