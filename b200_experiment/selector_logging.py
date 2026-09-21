@@ -13,6 +13,156 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
     return float(values[mask].double().mean()) if bool(mask.any()) else 0.0
 
 
+def _pearson(x: torch.Tensor, y: torch.Tensor) -> float:
+    left = x.detach().double().reshape(-1)
+    right = y.detach().double().reshape(-1)
+    if left.numel() < 2 or right.numel() != left.numel():
+        return 0.0
+    left = left - left.mean()
+    right = right - right.mean()
+    denominator = left.square().sum().sqrt() * right.square().sum().sqrt()
+    return float((left * right).sum() / denominator) if denominator > 0 else 0.0
+
+
+def _average_ranks(values: torch.Tensor) -> torch.Tensor:
+    order = torch.argsort(values, stable=True)
+    sorted_values = values.index_select(0, order)
+    new_group = torch.ones_like(sorted_values, dtype=torch.bool)
+    if sorted_values.numel() > 1:
+        new_group[1:] = sorted_values[1:] != sorted_values[:-1]
+    groups = new_group.long().cumsum(0) - 1
+    positions = torch.arange(order.numel(), device=values.device, dtype=torch.float64)
+    group_count = int(groups[-1].item()) + 1
+    sums = torch.zeros(group_count, device=values.device, dtype=torch.float64)
+    sums.scatter_add_(0, groups, positions)
+    counts = torch.bincount(groups, minlength=group_count).double()
+    sorted_ranks = (sums / counts).index_select(0, groups)
+    ranks = torch.empty_like(sorted_ranks)
+    ranks[order] = sorted_ranks
+    return ranks
+
+
+def _top_with_tie_break(
+    values: torch.Tensor, tie_breaker: torch.Tensor, count: int
+) -> set[int]:
+    indices = torch.arange(values.numel(), device=values.device)
+    tie_order = torch.argsort(tie_breaker, descending=True, stable=True)
+    indices = indices.index_select(0, tie_order)
+    value_order = torch.argsort(
+        values.index_select(0, indices), descending=True, stable=True
+    )
+    return set(indices.index_select(0, value_order[:count]).tolist())
+
+
+@torch.no_grad()
+def cmt_d_only_comparison_summary(
+    diagnostics: dict[str, torch.Tensor],
+    actual_weights: torch.Tensor,
+    canonical_weights: torch.Tensor,
+    global_token_indices: torch.Tensor,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Explain how D-only changes one allocation group versus canonical CMT."""
+    required = (
+        "gain",
+        "marginal_flux",
+        "successor_excess",
+        "sequential_gain_raw",
+        "sequential_gain_robust",
+        "canonical_score_robust",
+        "allocation_score",
+    )
+    missing = [key for key in required if key not in diagnostics]
+    if missing:
+        raise KeyError(f"D-only comparison is missing diagnostics: {missing}")
+    values = {key: diagnostics[key].detach().double().reshape(-1) for key in required}
+    actual = actual_weights.detach().double().reshape(-1)
+    canonical = canonical_weights.detach().double().reshape(-1)
+    indices = global_token_indices.detach().long().reshape(-1)
+    count = actual.numel()
+    if count == 0 or canonical.numel() != count or indices.numel() != count:
+        raise ValueError("D-only comparison requires aligned non-empty group tensors")
+    if any(value.numel() != count for value in values.values()):
+        raise ValueError("D-only comparison diagnostics must align with group weights")
+    if not all(
+        bool(torch.isfinite(value).all())
+        for value in (*values.values(), actual, canonical)
+    ):
+        raise FloatingPointError("D-only comparison received non-finite tensors")
+
+    gain = values["gain"]
+    flux = values["marginal_flux"]
+    future = values["successor_excess"]
+    d_raw = values["sequential_gain_raw"]
+    d_robust = values["sequential_gain_robust"]
+    canonical_score = values["canonical_score_robust"]
+    allocation_score = values["allocation_score"]
+    delta_weight = actual - canonical
+    positive = d_robust > 0
+    negative = d_robust < 0
+    zero = d_robust == 0
+    top_count = max(1, math.ceil(0.10 * count))
+    actual_top = _top_with_tie_break(actual, allocation_score, top_count)
+    canonical_top = _top_with_tie_break(canonical, canonical_score, top_count)
+    top_overlap = len(actual_top & canonical_top) / top_count
+    summary = {
+        "token_count": count,
+        "D_raw_mean": float(d_raw.mean()),
+        "D_raw_abs_mean": float(d_raw.abs().mean()),
+        "D_robust_mean": float(d_robust.mean()),
+        "D_robust_abs_mean": float(d_robust.abs().mean()),
+        "D_robust_positive_rate": float(positive.double().mean()),
+        "D_robust_negative_rate": float(negative.double().mean()),
+        "D_robust_zero_rate": float(zero.double().mean()),
+        "positive_flux_positive_future_rate": float(
+            ((flux > 0) & (future > 0)).double().mean()
+        ),
+        "positive_flux_negative_future_rate": float(
+            ((flux > 0) & (future < 0)).double().mean()
+        ),
+        "zero_flux_rate": float(flux.eq(0).double().mean()),
+        "pearson_D_robust_gain": _pearson(d_robust, gain),
+        "spearman_D_robust_gain": _pearson(
+            _average_ranks(d_robust), _average_ranks(gain)
+        ),
+        "pearson_D_robust_canonical_score": _pearson(d_robust, canonical_score),
+        "spearman_D_robust_canonical_score": _pearson(
+            _average_ranks(d_robust), _average_ranks(canonical_score)
+        ),
+        "pearson_actual_canonical_weight": _pearson(actual, canonical),
+        "spearman_actual_canonical_weight": _pearson(
+            _average_ranks(actual), _average_ranks(canonical)
+        ),
+        "allocation_score_matches_D_robust": bool(
+            torch.equal(allocation_score, d_robust)
+        ),
+        "mean_abs_weight_delta_vs_canonical": float(delta_weight.abs().mean()),
+        "max_abs_weight_delta_vs_canonical": float(delta_weight.abs().max()),
+        "weight_increased_vs_canonical_rate": float((delta_weight > 0).double().mean()),
+        "weight_decreased_vs_canonical_rate": float((delta_weight < 0).double().mean()),
+        "top_10pct_weight_overlap_with_canonical": float(top_overlap),
+    }
+
+    sparse: list[dict[str, Any]] = []
+
+    def add_extremes(
+        values_tensor: torch.Tensor, reason: str, largest: bool = True
+    ) -> None:
+        order = torch.argsort(values_tensor, descending=largest, stable=True)
+        for position in order[: min(8, count)]:
+            sparse.append(
+                {
+                    "global_token_index": int(indices[position].item()),
+                    "selection_reason": reason,
+                }
+            )
+
+    add_extremes(d_robust, "d_only_top_positive_D_robust")
+    add_extremes(d_robust, "d_only_most_negative_D_robust", largest=False)
+    add_extremes(d_robust.abs(), "d_only_top_abs_D_robust")
+    add_extremes(delta_weight.abs(), "d_only_largest_weight_change_vs_canonical")
+    return summary, sparse
+
+
 @torch.no_grad()
 def cmt_motivation_summary(
     diagnostics: dict[str, torch.Tensor],
@@ -441,6 +591,10 @@ class TokenScoreStatsLogger:
                 "learning_value": (-100.0, 100.0),
                 "learning_value_raw": (-100.0, 100.0),
                 "learning_value_robust": (-100.0, 100.0),
+                "canonical_score_raw": (-100.0, 100.0),
+                "canonical_score_robust": (-100.0, 100.0),
+                "d_only_score_raw": (-100.0, 100.0),
+                "d_only_score_robust": (-100.0, 100.0),
                 "allocation_score": (-100.0, 100.0),
                 "correction_kappa": (0.0, 10.0),
                 "w_raw": (0.0, 20.0),
@@ -555,6 +709,11 @@ class CMTTokenAuditLogger:
 
     _REASON_KEYS = (
         ("gain", "global_top_gain", "global_gain_rank"),
+        (
+            "sequential_gain_robust",
+            "global_top_sequential_gain_robust",
+            "global_sequential_gain_robust_rank",
+        ),
         ("w_raw", "global_top_w_raw", "global_raw_weight_rank"),
         ("w", "global_top_w", "global_final_weight_rank"),
     )
@@ -572,11 +731,17 @@ class CMTTokenAuditLogger:
         "learning_value",
         "learning_value_raw",
         "learning_value_robust",
+        "canonical_score_raw",
+        "canonical_score_robust",
+        "d_only_score_raw",
+        "d_only_score_robust",
+        "allocation_score",
         "correction_kappa",
         "successor_excess",
         "transition_weight",
         "w_raw",
         "w",
+        "canonical_counterfactual_w",
     )
 
     def __init__(
@@ -624,8 +789,8 @@ class CMTTokenAuditLogger:
                     "group that produced the audited optimizer step"
                 ),
                 "selection": (
-                    "deduplicated union of allocation-group Top-K gain, w_raw, w, "
-                    "and bounded motivation examples"
+                    "deduplicated union of allocation-group Top-K gain, corrected D, "
+                    "w_raw, w, and bounded motivation/D-only comparison examples"
                 ),
                 "interval": self.interval,
                 "top_k": self.top_k,
@@ -639,7 +804,7 @@ class CMTTokenAuditLogger:
                     "w": "final weight used by the OPD loss",
                 },
                 "ranking_scope": "per allocation group; never across different beta values",
-                "final_weight_tie_break": "learning_value_robust descending",
+                "final_weight_tie_break": "allocation_score descending",
                 "raw_aliases": {
                     "sequential_gain": "sequential_gain_raw",
                     "successor_R": "successor_excess_total (not successor_return)",
@@ -777,7 +942,6 @@ class CMTTokenAuditLogger:
             "gain",
             "w_raw",
             "w",
-            "learning_value_robust",
             "allocation_group_index",
             "allocation_optimizer_step",
             "allocation_processed",
@@ -795,10 +959,18 @@ class CMTTokenAuditLogger:
         group_indices = global_diagnostics["allocation_group_index"].reshape(-1)
         optimizer_steps = global_diagnostics["allocation_optimizer_step"].reshape(-1)
         processed = global_diagnostics["allocation_processed"].reshape(-1).bool()
-        robust_score = global_diagnostics["learning_value_robust"].reshape(-1)
+        tie_break_score = global_diagnostics.get(
+            "allocation_score", global_diagnostics.get("learning_value_robust")
+        )
+        if tie_break_score is None:
+            tie_break_score = global_diagnostics["gain"]
+        robust_score = tie_break_score.reshape(-1)
         rank_maps: dict[str, dict[int, int]] = {}
         reasons: dict[int, list[str]] = {}
         for value_key, reason, rank_key in self._REASON_KEYS:
+            if value_key not in global_diagnostics:
+                rank_maps[rank_key] = {}
+                continue
             rank_map = self._group_top_ranks(
                 global_diagnostics[value_key].detach().reshape(-1),
                 group_indices,
@@ -895,6 +1067,9 @@ class CMTTokenAuditLogger:
                     "selection_reason": reasons[global_index],
                     "selection_reasons": reasons[global_index],
                     "global_gain_rank": rank_maps["global_gain_rank"].get(global_index),
+                    "global_sequential_gain_robust_rank": rank_maps[
+                        "global_sequential_gain_robust_rank"
+                    ].get(global_index),
                     "global_raw_weight_rank": rank_maps["global_raw_weight_rank"].get(
                         global_index
                     ),
@@ -904,6 +1079,9 @@ class CMTTokenAuditLogger:
                     "allocation_group_gain_rank": rank_maps["global_gain_rank"].get(
                         global_index
                     ),
+                    "allocation_group_sequential_gain_robust_rank": rank_maps[
+                        "global_sequential_gain_robust_rank"
+                    ].get(global_index),
                     "allocation_group_raw_weight_rank": rank_maps[
                         "global_raw_weight_rank"
                     ].get(global_index),

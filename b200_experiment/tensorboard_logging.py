@@ -137,6 +137,35 @@ CMT_CORRECTION_TAGS = {
     ),
 }
 
+CMT_D_ONLY_TAGS = {
+    "cmt/d_only/D_raw_abs_mean": "d_only_D_raw_abs_mean",
+    "cmt/d_only/D_robust_abs_mean": "d_only_D_robust_abs_mean",
+    "cmt/d_only/D_robust_positive_rate": "d_only_D_robust_positive_rate",
+    "cmt/d_only/D_robust_negative_rate": "d_only_D_robust_negative_rate",
+    "cmt/d_only/D_robust_zero_rate": "d_only_D_robust_zero_rate",
+    "cmt/d_only/pearson_D_gain": "d_only_pearson_D_robust_gain",
+    "cmt/d_only/spearman_D_gain": "d_only_spearman_D_robust_gain",
+    "cmt/d_only/pearson_weight_canonical": ("d_only_pearson_actual_canonical_weight"),
+    "cmt/d_only/spearman_weight_canonical": ("d_only_spearman_actual_canonical_weight"),
+    "cmt/d_only/mean_abs_weight_delta_vs_canonical": (
+        "d_only_mean_abs_weight_delta_vs_canonical"
+    ),
+    "cmt/d_only/max_abs_weight_delta_vs_canonical": (
+        "d_only_max_abs_weight_delta_vs_canonical"
+    ),
+    "cmt/d_only/top_10pct_weight_overlap_with_canonical": (
+        "d_only_top_10pct_weight_overlap_with_canonical"
+    ),
+}
+
+CMT_D_ONLY_SELECTOR_TAGS = {
+    "cmt/canonical_score_robust_mean": ("canonical_score_robust", "mean"),
+    "cmt/d_only_score_robust_mean": ("d_only_score_robust", "mean"),
+    "cmt/d_only_score_robust_std": ("d_only_score_robust", "std"),
+    "cmt/allocation_score_mean": ("allocation_score", "mean"),
+    "cmt/allocation_score_std": ("allocation_score", "std"),
+}
+
 GRPO_TAGS = {
     "grpo/reward_mean": ("grpo_reward_mean",),
     "grpo/reward_std": ("grpo_reward_std",),
@@ -201,6 +230,13 @@ def production_tensorboard_metrics(
         )
         selected.update(
             {
+                tag: _selector_value(selector, path)
+                for tag, path in CMT_D_ONLY_SELECTOR_TAGS.items()
+                if path[0] in selector
+            }
+        )
+        selected.update(
+            {
                 tag: float(metrics[field])
                 for tag, field in CMT_ALLOCATION_TAGS.items()
                 if field in metrics and metrics[field] is not None
@@ -210,6 +246,13 @@ def production_tensorboard_metrics(
             {
                 tag: float(metrics[field])
                 for tag, field in CMT_CORRECTION_TAGS.items()
+                if field in metrics and metrics[field] is not None
+            }
+        )
+        selected.update(
+            {
+                tag: float(metrics[field])
+                for tag, field in CMT_D_ONLY_TAGS.items()
                 if field in metrics and metrics[field] is not None
             }
         )

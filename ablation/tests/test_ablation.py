@@ -6,7 +6,10 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from b200_experiment.selectors.cmt_selector import CMTSelector, kl_constrained_allocation
+from b200_experiment.selectors.cmt_selector import (
+    CMTSelector,
+    kl_constrained_allocation,
+)
 from b200_experiment.selectors.pgt_selector import PGTOutput
 
 
@@ -26,25 +29,33 @@ def _input():
         "teacher_tail_mass": torch.full(shape, 0.3),
         "support_width": torch.full(shape, 3.0),
     }
-    return PGTOutput(
-        gain,
-        diagnostics,
-        torch.tensor([[[1, 2, 3], [1, 2, 3]]]),
-        student,
-        teacher,
-        torch.ones_like(student, dtype=torch.bool),
-    ), torch.tensor([[1, 1]]), torch.ones(shape, dtype=torch.bool)
+    return (
+        PGTOutput(
+            gain,
+            diagnostics,
+            torch.tensor([[[1, 2, 3], [1, 2, 3]]]),
+            student,
+            teacher,
+            torch.ones_like(student, dtype=torch.bool),
+        ),
+        torch.tensor([[1, 1]]),
+        torch.ones(shape, dtype=torch.bool),
+    )
 
 
-@pytest.mark.parametrize("arm", ["g", "g_x", "g_d"])
+@pytest.mark.parametrize("arm", ["d_only", "g", "g_x", "g_d"])
 def test_ablation_arm_uses_documented_cmt_quantity(arm):
     base, sampled, valid = _input()
     canonical = CMTSelector().compute_scores(base, sampled, valid)
     result = CMTSelector(ablation_arm=arm).compute_scores(base, sampled, valid)
-    if arm == "g":
+    if arm == "d_only":
+        expected = canonical.diagnostics["sequential_gain_raw"]
+    elif arm == "g":
         expected = canonical.diagnostics["gain"]
     elif arm == "g_x":
-        expected = canonical.diagnostics["gain"] + canonical.diagnostics["successor_excess"]
+        expected = (
+            canonical.diagnostics["gain"] + canonical.diagnostics["successor_excess"]
+        )
     else:
         expected = canonical.scores
     assert torch.allclose(result.scores, expected)
@@ -70,5 +81,7 @@ def test_cmt_top_p_non_one_is_explicitly_diagnosed():
     # that the production path emits a strong warning rather than silently
     # claiming an unbiased on-policy estimator.
     with warnings.catch_warnings(record=True) as caught:
-        warnings.warn("CMT top_p<1 is an explicit diagnostic assumption", RuntimeWarning)
+        warnings.warn(
+            "CMT top_p<1 is an explicit diagnostic assumption", RuntimeWarning
+        )
     assert any(issubclass(item.category, RuntimeWarning) for item in caught)

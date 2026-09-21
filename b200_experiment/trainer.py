@@ -118,6 +118,7 @@ from .selector_logging import (
     CMTTokenAuditLogger,
     SelectedTokenLogger,
     TokenScoreStatsLogger,
+    cmt_d_only_comparison_summary,
     cmt_motivation_summary,
 )
 from .selectors import (
@@ -471,8 +472,14 @@ def _apply_global_cmt_correction(
     *,
     mode: str,
     quantile: float,
+    score_mode: str = "canonical",
 ) -> tuple[SelectorOutput, dict[str, torch.Tensor], dict[str, float]]:
-    """Correct raw CMT D once on the rollout-global valid-token population."""
+    """Correct raw CMT D once, then select the configured allocation score.
+
+    Canonical CMT allocates with ``g + corrected_D``.  The D-only ablation uses
+    the exact same globally calibrated correction but removes only the final
+    addition of ``g`` and therefore allocates with ``corrected_D``.
+    """
     robust_d, robust_value, kappa, metrics = robust_cmt_correction(
         global_diagnostics["gain"],
         global_diagnostics["sequential_gain_raw"],
@@ -481,10 +488,16 @@ def _apply_global_cmt_correction(
     )
     raw_value = global_diagnostics["gain"] + global_diagnostics["sequential_gain_raw"]
     kappa_values = torch.full_like(robust_value, float(kappa))
+    resolved_score_mode = str(score_mode).strip().lower()
+    if resolved_score_mode not in {"canonical", "g_d", "d_only", "g", "g_x"}:
+        raise ValueError(f"Unknown CMT score mode: {score_mode!r}")
     if mode == "none":
         # Preserve every legacy/ablation score exactly in the default mode.
         global_allocation_score = global_diagnostics["s_CMT"]
         local_allocation_score = local.scores
+    elif resolved_score_mode == "d_only":
+        global_allocation_score = robust_d
+        local_allocation_score = scatter_valid(robust_d[start:end], valid_mask)
     else:
         global_allocation_score = robust_value
         local_allocation_score = scatter_valid(robust_value[start:end], valid_mask)
@@ -497,7 +510,14 @@ def _apply_global_cmt_correction(
         correction_kappa=scatter_valid(kappa_values[start:end], valid_mask),
         sequential_gain_robust=scatter_valid(robust_d[start:end], valid_mask),
         learning_value_robust=scatter_valid(robust_value[start:end], valid_mask),
+        canonical_score_raw=scatter_valid(raw_value[start:end], valid_mask),
+        canonical_score_robust=scatter_valid(robust_value[start:end], valid_mask),
+        d_only_score_raw=scatter_valid(
+            global_diagnostics["sequential_gain_raw"][start:end], valid_mask
+        ),
+        d_only_score_robust=scatter_valid(robust_d[start:end], valid_mask),
         allocation_score=local_allocation_score,
+        score_mode=resolved_score_mode,
         correction_mode=mode,
         correction_quantile=float(quantile),
     )
@@ -510,6 +530,10 @@ def _apply_global_cmt_correction(
         correction_kappa=kappa_values,
         sequential_gain_robust=robust_d,
         learning_value_robust=robust_value,
+        canonical_score_raw=raw_value,
+        canonical_score_robust=robust_value,
+        d_only_score_raw=global_diagnostics["sequential_gain_raw"],
+        d_only_score_robust=robust_d,
         allocation_score=global_allocation_score,
         s_CMT=global_allocation_score,
     )
@@ -708,6 +732,15 @@ def _append_train_metrics_csv(path: Path, metrics: dict[str, Any]) -> None:
         "successor_excess",
         "sequential_gain",
         "learning_value",
+        "sequential_gain_raw",
+        "sequential_gain_robust",
+        "learning_value_raw",
+        "learning_value_robust",
+        "canonical_score_raw",
+        "canonical_score_robust",
+        "d_only_score_raw",
+        "d_only_score_robust",
+        "allocation_score",
         "s_CMT",
         "iw_weight",
     ):
@@ -832,6 +865,15 @@ def _append_train_metrics_csv(path: Path, metrics: dict[str, Any]) -> None:
             "successor_excess",
             "sequential_gain",
             "learning_value",
+            "sequential_gain_raw",
+            "sequential_gain_robust",
+            "learning_value_raw",
+            "learning_value_robust",
+            "canonical_score_raw",
+            "canonical_score_robust",
+            "d_only_score_raw",
+            "d_only_score_robust",
+            "allocation_score",
             "s_CMT",
             "iw_weight",
         )
@@ -2204,9 +2246,7 @@ def _opd_train_step(
             ),
             # Backward-compatible alias. In direct mode this is the KL of the
             # final bounded weights, not the unbounded diagnostic reference.
-            "allocation_kl_achieved": float(
-                allocation_metrics["allocation_kl_final"]
-            ),
+            "allocation_kl_achieved": float(allocation_metrics["allocation_kl_final"]),
             "allocation_inverse_temperature": float(allocation_inverse_temperature),
             "rollout_id": int(rollout_id),
             "optimizer_step": int(global_optimizer_step),
@@ -3587,6 +3627,9 @@ def run_training(
             metadata["cmt_correction"] = {
                 "mode": cmt_correction_mode,
                 "quantile": cmt_correction_quantile,
+                "score_mode": str(
+                    config["selector"].get("cmt_ablation_arm", "canonical")
+                ),
                 "normalization_scope": "global_valid_tokens_within_full_rollout",
                 "raw_aliases": {
                     "sequential_gain": "sequential_gain_raw",
@@ -4242,6 +4285,7 @@ def run_training(
                 primary_end,
                 mode=cmt_correction_mode,
                 quantile=cmt_correction_quantile,
+                score_mode=cmt_selector.ablation_arm,
             )
             ta_time = pgt_score_time
             bellman_scan_time = cmt_score_time
@@ -4580,6 +4624,105 @@ def run_training(
             if cmt_allocation_mode == "gibbs":
                 cmt_allocation_metrics["fraction_at_weight_min"] = 0.0
                 cmt_allocation_metrics["fraction_at_weight_max"] = 0.0
+            cmt_d_only_group_comparisons: list[dict[str, Any]] = []
+            cmt_d_only_comparison_metrics: dict[str, float] = {}
+            global_canonical_counterfactual_weights = torch.ones_like(
+                global_cmt_weights
+            )
+            if cmt_selector.ablation_arm == "d_only":
+                global_indices_tensor = torch.arange(
+                    global_cmt_processed.numel(), device=global_cmt_processed.device
+                )
+                for group_index_tensor in torch.unique(
+                    global_cmt_group_indices[global_cmt_processed]
+                ):
+                    group_index = int(group_index_tensor.item())
+                    group_mask = global_cmt_processed & global_cmt_group_indices.eq(
+                        group_index
+                    )
+                    _, canonical_weights, _, _ = cmt_allocation(
+                        global_primary_diagnostics["canonical_score_robust"][
+                            group_mask
+                        ],
+                        float(selector_cfg.get("cmt_allocation_kl", 0.5)),
+                        mode=cmt_allocation_mode,
+                        weight_min=cmt_weight_min,
+                        weight_max=cmt_weight_max,
+                        final_epsilon=cmt_final_allocation_kl,
+                    )
+                    global_canonical_counterfactual_weights[group_mask] = (
+                        canonical_weights
+                    )
+                    group_diagnostics = {
+                        key: value[group_mask]
+                        for key, value in global_primary_diagnostics.items()
+                        if torch.is_tensor(value)
+                        and value.shape == global_cmt_processed.shape
+                    }
+                    comparison, _ = cmt_d_only_comparison_summary(
+                        group_diagnostics,
+                        global_cmt_weights[group_mask],
+                        canonical_weights,
+                        global_indices_tensor[group_mask],
+                    )
+                    comparison.update(
+                        ppo_group_index=group_index,
+                        optimizer_step=int(
+                            torch.unique(global_cmt_optimizer_steps[group_mask]).item()
+                        ),
+                    )
+                    cmt_d_only_group_comparisons.append(comparison)
+                total_comparison_tokens = sum(
+                    item["token_count"] for item in cmt_d_only_group_comparisons
+                )
+                aggregate_keys = (
+                    "D_raw_mean",
+                    "D_raw_abs_mean",
+                    "D_robust_mean",
+                    "D_robust_abs_mean",
+                    "D_robust_positive_rate",
+                    "D_robust_negative_rate",
+                    "D_robust_zero_rate",
+                    "positive_flux_positive_future_rate",
+                    "positive_flux_negative_future_rate",
+                    "zero_flux_rate",
+                    "pearson_D_robust_gain",
+                    "spearman_D_robust_gain",
+                    "pearson_D_robust_canonical_score",
+                    "spearman_D_robust_canonical_score",
+                    "pearson_actual_canonical_weight",
+                    "spearman_actual_canonical_weight",
+                    "mean_abs_weight_delta_vs_canonical",
+                    "max_abs_weight_delta_vs_canonical",
+                    "weight_increased_vs_canonical_rate",
+                    "weight_decreased_vs_canonical_rate",
+                    "top_10pct_weight_overlap_with_canonical",
+                )
+                for key in aggregate_keys:
+                    if key == "max_abs_weight_delta_vs_canonical":
+                        cmt_d_only_comparison_metrics[f"d_only_{key}"] = max(
+                            item[key] for item in cmt_d_only_group_comparisons
+                        )
+                    else:
+                        cmt_d_only_comparison_metrics[f"d_only_{key}"] = sum(
+                            item[key] * item["token_count"]
+                            for item in cmt_d_only_group_comparisons
+                        ) / max(total_comparison_tokens, 1)
+                cmt_d_only_comparison_metrics["d_only_comparison_token_count"] = float(
+                    total_comparison_tokens
+                )
+            local_canonical_counterfactual_weights = None
+            if cmt_selector.ablation_arm == "d_only":
+                global_primary_diagnostics["canonical_counterfactual_w"] = (
+                    global_canonical_counterfactual_weights
+                )
+                global_cmt_diagnostics["canonical_counterfactual_w"] = (
+                    global_canonical_counterfactual_weights
+                )
+                local_canonical_counterfactual_weights = scatter_valid(
+                    global_canonical_counterfactual_weights[primary_start:primary_end],
+                    valid,
+                )
             cmt_diagnostics = dict(primary.diagnostics)
             cmt_diagnostics.update(
                 w_raw=local_cmt_raw_weights,
@@ -4591,6 +4734,10 @@ def run_training(
                 allocation_kl_epsilon=float(selector_cfg.get("cmt_allocation_kl", 0.5)),
                 allocation_count=int(train_metrics["gibbs_allocations"]),
             )
+            if local_canonical_counterfactual_weights is not None:
+                cmt_diagnostics["canonical_counterfactual_w"] = (
+                    local_canonical_counterfactual_weights
+                )
             primary = SelectorOutput(local_cmt_weights, cmt_diagnostics)
             token_allocation = local_cmt_weights
             score_key = "w"
@@ -4648,6 +4795,18 @@ def run_training(
                             device=global_cmt_processed.device,
                         )[group_mask],
                     )
+                    if cmt_selector.ablation_arm == "d_only":
+                        comparison, comparison_sparse = cmt_d_only_comparison_summary(
+                            group_diagnostics,
+                            global_cmt_weights[group_mask],
+                            global_canonical_counterfactual_weights[group_mask],
+                            torch.arange(
+                                global_cmt_processed.numel(),
+                                device=global_cmt_processed.device,
+                            )[group_mask],
+                        )
+                        motivation["d_only_comparison"] = comparison
+                        group_sparse.extend(comparison_sparse)
                     solver_event = allocation_metrics_by_step[int(audit_step)]
                     group_summary = {
                         "allocation_id": solver_event["allocation_id"],
@@ -4691,6 +4850,8 @@ def run_training(
                     audit_paths.append(str(audit_path))
         else:
             cmt_allocation_metrics = {}
+            cmt_d_only_group_comparisons = []
+            cmt_d_only_comparison_metrics = {}
             audit_paths = []
             motivation_summary_paths = []
         optimizer_steps_completed = int(train_metrics["optimizer_steps"])
@@ -4813,6 +4974,7 @@ def run_training(
             "cmt_correction_quantile": (
                 cmt_correction_quantile if method == "cmt" else None
             ),
+            "cmt_score_mode": (cmt_selector.ablation_arm if method == "cmt" else None),
             "cmt_final_allocation_kl": (
                 cmt_final_allocation_kl if method == "cmt" else None
             ),
@@ -4998,11 +5160,15 @@ def run_training(
                 if method == "cmt"
                 else []
             ),
+            "d_only_comparison_groups": (
+                cmt_d_only_group_comparisons if method == "cmt" else []
+            ),
             "rollout_correction": (
                 dict(cmt_correction_metrics) if method == "cmt" else None
             ),
             **cmt_correction_metrics,
             **cmt_allocation_metrics,
+            **cmt_d_only_comparison_metrics,
         }
         # The rollout server is already sleeping; release tensors before a
         # possible periodic-evaluation subprocess reserves its KV cache.

@@ -528,6 +528,9 @@ class CMTSelector:
         aliases = {
             "canonical": "canonical",
             "cmt": "canonical",
+            "d": "d_only",
+            "d_only": "d_only",
+            "d-only": "d_only",
             "g": "g",
             "g_x": "g_x",
             "gx": "g_x",
@@ -536,7 +539,7 @@ class CMTSelector:
         }
         if arm not in aliases:
             raise ValueError(
-                "CMT ablation_arm must be one of canonical, g, g_x, or g_d; "
+                "CMT ablation_arm must be one of canonical, d_only, g, g_x, or g_d; "
                 f"got {ablation_arm!r}"
             )
         self.gamma = float(gamma)
@@ -696,7 +699,12 @@ class CMTSelector:
         # default is byte-for-byte equivalent to the canonical score.  X is
         # the semantic successor excess (not R/M/V/H); D is the canonical
         # sequential marginal gain.
-        if self.ablation_arm == "g":
+        if self.ablation_arm == "d_only":
+            learning_value = torch.where(
+                valid, sequential_gain, torch.zeros_like(sequential_gain)
+            )
+            score_definition = "ablation_sequential_gain_d_only"
+        elif self.ablation_arm == "g":
             learning_value = g
             score_definition = "ablation_local_gain_g"
         elif self.ablation_arm == "g_x":
@@ -759,6 +767,7 @@ class CMTSelector:
             sequential_gain=sequential_gain,
             sequential_gain_raw=sequential_gain,
             learning_value=learning_value,
+            canonical_learning_value=canonical_learning_value,
             learning_value_raw=canonical_learning_value,
             s_CMT=learning_value,
             score_definition=score_definition,

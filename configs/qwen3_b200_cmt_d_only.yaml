@@ -1,0 +1,27 @@
+_base_: qwen3_b200_cmt.yaml
+
+experiment:
+  method: cmt
+  output_dir: outputs/cmt_d_only_opd
+
+# Controlled CMT ablation: keep the refined production pipeline intact and
+# remove only the final additive local term from the allocation score.
+selector:
+  cmt_ablation_arm: d_only
+  cmt_correction_mode: tanh_q99
+  cmt_correction_quantile: 0.99
+  cmt_allocation_mode: direct_bounded_gibbs
+  cmt_weight_min: 0.5
+  cmt_weight_max: 2.0
+  cmt_final_allocation_kl: 0.02
+
+logging:
+  # Compact all-token distributions are cheap enough to retain at every step.
+  token_score_stats_enabled: true
+  token_score_interval: 1
+  # Context-rich records remain sparse so logging does not dominate training.
+  cmt_token_audit_enabled: true
+  cmt_token_audit_interval: 150
+  cmt_token_audit_top_k: 50
+  cmt_token_context_radius: 32
+  cmt_gain_heatmap_enabled: false

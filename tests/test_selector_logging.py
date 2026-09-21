@@ -12,6 +12,7 @@ from b200_experiment.selector_logging import (
     CMTTokenAuditLogger,
     SelectedTokenLogger,
     TokenScoreStatsLogger,
+    cmt_d_only_comparison_summary,
     cmt_motivation_summary,
 )
 
@@ -269,6 +270,7 @@ class SelectorLoggingTests(unittest.TestCase):
                 w_raw=torch.tensor([[1.0, 1.0, 9.0, 10.0]]),
                 w=torch.tensor([[2.0, 2.0, 2.0, 2.0]]),
                 learning_value_robust=torch.tensor([[1.0, 8.0, 100.0, 200.0]]),
+                allocation_score=torch.tensor([[1.0, 8.0, 100.0, 200.0]]),
             )
             global_diagnostics = {
                 key: value.reshape(-1) for key, value in local.items()
@@ -329,6 +331,31 @@ class SelectorLoggingTests(unittest.TestCase):
             ),
             8,
         )
+
+    def test_d_only_summary_compares_corrected_score_and_canonical_weights(self):
+        d_robust = torch.tensor([-2.0, -0.5, 0.5, 2.0])
+        gain = torch.tensor([3.0, 2.0, 1.0, 0.0])
+        actual = torch.tensor([0.5, 0.75, 1.25, 1.5])
+        canonical = torch.tensor([1.5, 1.25, 0.75, 0.5])
+        diagnostics = {
+            "gain": gain,
+            "marginal_flux": torch.tensor([1.0, 1.0, 0.0, 1.0]),
+            "successor_excess": torch.tensor([-2.0, -0.5, 0.0, 2.0]),
+            "sequential_gain_raw": 10.0 * d_robust,
+            "sequential_gain_robust": d_robust,
+            "canonical_score_robust": gain + d_robust,
+            "allocation_score": d_robust.clone(),
+        }
+        summary, sparse = cmt_d_only_comparison_summary(
+            diagnostics, actual, canonical, torch.arange(10, 14)
+        )
+        self.assertTrue(summary["allocation_score_matches_D_robust"])
+        self.assertEqual(summary["D_robust_positive_rate"], 0.5)
+        self.assertEqual(summary["D_robust_negative_rate"], 0.5)
+        self.assertGreater(summary["mean_abs_weight_delta_vs_canonical"], 0)
+        reasons = {item["selection_reason"] for item in sparse}
+        self.assertIn("d_only_top_positive_D_robust", reasons)
+        self.assertIn("d_only_largest_weight_change_vs_canonical", reasons)
 
 
 if __name__ == "__main__":

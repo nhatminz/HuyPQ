@@ -12,6 +12,8 @@ from b200_experiment.selectors.cmt_selector import (
     robust_cmt_correction,
 )
 from b200_experiment.selectors.pgt_selector import PGTOutput
+from b200_experiment.selectors.base import SelectorOutput
+from b200_experiment.trainer import _apply_global_cmt_correction
 
 
 def _support(
@@ -480,6 +482,80 @@ def test_none_correction_preserves_raw_score_exactly():
     robust, learning, _, _ = robust_cmt_correction(gain, raw, mode="none")
     assert torch.equal(robust, raw)
     assert torch.equal(learning, gain + raw)
+
+
+def test_d_only_selector_uses_exact_raw_sequential_gain():
+    p = torch.log(torch.tensor([[[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]]))
+    q = torch.log(torch.tensor([[[0.25, 0.75], [0.25, 0.75], [0.25, 0.75]]]))
+    support = _support(p, q, gain=torch.tensor([[1.0, 2.0, 4.0]]))
+    valid = torch.tensor([[True, True, False]])
+    result = CMTSelector(ablation_arm="d_only").compute_scores(
+        support,
+        torch.tensor([[1, 1, 1]]),
+        valid,
+    )
+    assert torch.equal(result.scores, result.diagnostics["sequential_gain_raw"])
+    assert torch.equal(result.diagnostics["s_CMT"], result.scores)
+    assert torch.all(result.scores[~valid] == 0)
+    assert result.diagnostics["ablation_arm"] == "d_only"
+
+
+def test_d_only_global_tanh_uses_corrected_d_without_adding_gain():
+    gain = torch.tensor([1.0, 2.0, 4.0])
+    d_raw = torch.tensor([-100.0, 0.25, 100.0])
+    valid = torch.ones(1, 3, dtype=torch.bool)
+    local = SelectorOutput(
+        d_raw.reshape(1, 3),
+        {"s_CMT": d_raw.reshape(1, 3)},
+    )
+    global_diagnostics = {
+        "gain": gain.clone(),
+        "sequential_gain_raw": d_raw.clone(),
+        "s_CMT": d_raw.clone(),
+    }
+    corrected, diagnostics, _ = _apply_global_cmt_correction(
+        local,
+        global_diagnostics,
+        valid,
+        0,
+        3,
+        mode="tanh_q99",
+        quantile=0.99,
+        score_mode="d_only",
+    )
+    robust_d, robust_canonical, _, _ = robust_cmt_correction(
+        gain, d_raw, mode="tanh_q99", quantile=0.99
+    )
+    assert torch.equal(corrected.scores.reshape(-1), robust_d)
+    assert torch.equal(diagnostics["allocation_score"], robust_d)
+    assert torch.equal(diagnostics["canonical_score_robust"], robust_canonical)
+    assert not torch.equal(diagnostics["allocation_score"], robust_canonical)
+
+
+def test_canonical_global_tanh_behavior_is_unchanged():
+    gain = torch.tensor([1.0, 2.0, 4.0])
+    d_raw = torch.tensor([-100.0, 0.25, 100.0])
+    canonical_raw = gain + d_raw
+    valid = torch.ones(1, 3, dtype=torch.bool)
+    corrected, diagnostics, _ = _apply_global_cmt_correction(
+        SelectorOutput(canonical_raw.reshape(1, 3), {}),
+        {
+            "gain": gain.clone(),
+            "sequential_gain_raw": d_raw.clone(),
+            "s_CMT": canonical_raw.clone(),
+        },
+        valid,
+        0,
+        3,
+        mode="tanh_q99",
+        quantile=0.99,
+        score_mode="canonical",
+    )
+    _, expected, _, _ = robust_cmt_correction(
+        gain, d_raw, mode="tanh_q99", quantile=0.99
+    )
+    assert torch.equal(corrected.scores.reshape(-1), expected)
+    assert torch.equal(diagnostics["allocation_score"], expected)
 
 
 def test_direct_bounded_solver_is_finite_mean_one_bounded_and_monotone():

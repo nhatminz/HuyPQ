@@ -156,6 +156,24 @@ class TrainingLauncherTests(unittest.TestCase):
         ):
             self.assertIn(f"selector.{config_key}=", common)
 
+    def test_cmt_d_only_launcher_keeps_refined_pipeline_and_changes_only_arm(self):
+        script = REPO_ROOT / "scripts" / "train_cmt_d_only_b200.sh"
+        content = script.read_text(encoding="utf-8")
+        self.assertTrue(os.access(script, os.X_OK))
+        self.assertIn("CMT_CORRECTION_MODE:-tanh_q99", content)
+        self.assertIn("CMT_ALLOCATION_MODE:-direct_bounded_gibbs", content)
+        self.assertIn("CMT_FINAL_ALLOCATION_KL:-0.02", content)
+        self.assertIn("qwen3_b200_cmt_d_only.yaml", content)
+        config = load_config(REPO_ROOT / "configs" / "qwen3_b200_cmt_d_only.yaml")
+        self.assertEqual(config["selector"]["cmt_ablation_arm"], "d_only")
+        self.assertEqual(config["selector"]["cmt_correction_mode"], "tanh_q99")
+        self.assertEqual(
+            config["selector"]["cmt_allocation_mode"], "direct_bounded_gibbs"
+        )
+        self.assertEqual(config["selector"]["cmt_weight_min"], 0.5)
+        self.assertEqual(config["selector"]["cmt_weight_max"], 2.0)
+        self.assertEqual(config["selector"]["cmt_final_allocation_kl"], 0.02)
+
     def test_iw_launcher_has_shared_dataset_presets_and_requested_defaults(self):
         content = (REPO_ROOT / "scripts" / "train_iw_b200.sh").read_text(
             encoding="utf-8"

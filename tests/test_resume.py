@@ -511,6 +511,21 @@ class ResumeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, key):
                     validate_resume_config(checkpoint, current)
 
+    def test_resume_rejects_switching_between_canonical_and_d_only_score(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            checkpoint = output / "checkpoint-000100"
+            checkpoint.mkdir()
+            source = _controlled_config("cmt")
+            source["selector"]["cmt_ablation_arm"] = "d_only"
+            (output / "resolved_config.yaml").write_text(
+                yaml.safe_dump(source), encoding="utf-8"
+            )
+            current = copy.deepcopy(source)
+            current["selector"]["cmt_ablation_arm"] = "canonical"
+            with self.assertRaisesRegex(ValueError, "cmt_ablation_arm"):
+                validate_resume_config(checkpoint, current)
+
     def test_auto_resume_uses_latest_complete_checkpoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

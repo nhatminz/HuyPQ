@@ -1038,6 +1038,30 @@ CMT_FINAL_ALLOCATION_KL=0.02 \
 `direct_bounded_gibbs`, budget thật của final weight là `CMT_FINAL_ALLOCATION_KL=0.02`;
 `w_raw` chỉ là nghiệm unbounded tham chiếu tại cùng budget `0.02` và không đi vào loss.
 
+### 11.2.1. Chạy ablation chỉ dùng thành phần tuần tự `D_t`
+
+Launcher sau giữ nguyên pipeline mới ở trên, gồm correction `tanh_q99`, direct bounded Gibbs,
+weight bounds `[0.5, 2.0]` và final KL `0.02`. Khác biệt duy nhất ở score cấp cho allocator:
+
+```text
+canonical: S_t = g_t + corrected(D_t)
+D-only:    S_t =       corrected(D_t)
+```
+
+`g_t` vẫn được tính vì nó tham gia định nghĩa `D_t` và scale `kappa` của correction. Chạy bằng:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+RUN_NAME="cmt_d_only_tanhq99_direct_compmath_seed42" \
+TRAIN_DATASET=competition_math \
+  bash scripts/train_cmt_d_only_b200.sh
+```
+
+Launcher bật compact token-score statistics ở mỗi step và sparse token audit mỗi 150 step.
+Ngoài raw/corrected `D_t`, output còn chứa counterfactual canonical weights được tính detached
+trên cùng PPO group để phân tích sự thay đổi ranking; các weight counterfactual không tham gia loss
+hoặc backward.
+
 ### 11.3. Chạy legacy post-hoc bounded Gibbs `[0.5, 2.0]`
 
 ```bash
