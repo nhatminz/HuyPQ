@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest import mock
+
+import torch
+
+import b200_experiment.models as models
 
 from b200_experiment.models import (
     assert_tokenizer_compatibility,
     effective_text_config,
     model_vocab_size,
+    model_dtype_kwargs,
     qwen35_composite_weight_name,
+    tokenizer_load_kwargs,
     validate_shared_tokenizer_protocol,
 )
 
@@ -30,6 +37,22 @@ class _FakeTokenizer:
 
 
 class ModelCompatibilityTests(unittest.TestCase):
+    def test_tokenizer_loader_enables_mistral_regex_correction(self):
+        self.assertEqual(
+            tokenizer_load_kwargs(),
+            {"local_files_only": True, "fix_mistral_regex": True},
+        )
+
+    def test_transformers_457_uses_non_deprecated_dtype_keyword(self):
+        with mock.patch.object(models.transformers, "__version__", "4.57.3"):
+            self.assertEqual(
+                model_dtype_kwargs(torch.bfloat16), {"dtype": torch.bfloat16}
+            )
+        with mock.patch.object(models.transformers, "__version__", "4.55.4"):
+            self.assertEqual(
+                model_dtype_kwargs(torch.bfloat16), {"torch_dtype": torch.bfloat16}
+            )
+
     def test_composite_qwen35_uses_nested_text_config_and_vocab(self):
         text_config = SimpleNamespace(model_type="qwen3_5_text", vocab_size=248320)
         composite = SimpleNamespace(model_type="qwen3_5", text_config=text_config)
@@ -54,12 +77,8 @@ class ModelCompatibilityTests(unittest.TestCase):
         vocab = {"a": 0, "b": 1}
         student = _FakeTokenizer(vocab, {}, {})
         teacher = _FakeTokenizer(vocab, {}, {})
-        student_config = SimpleNamespace(
-            text_config=SimpleNamespace(vocab_size=2)
-        )
-        teacher_config = SimpleNamespace(
-            text_config=SimpleNamespace(vocab_size=2)
-        )
+        student_config = SimpleNamespace(text_config=SimpleNamespace(vocab_size=2))
+        teacher_config = SimpleNamespace(text_config=SimpleNamespace(vocab_size=2))
 
         result = assert_tokenizer_compatibility(
             student, teacher, student_config, teacher_config

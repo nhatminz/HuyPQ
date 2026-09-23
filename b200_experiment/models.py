@@ -150,9 +150,22 @@ def choose_attention_implementation(requested: str) -> str:
 
 
 def model_dtype_kwargs(dtype: torch.dtype) -> dict[str, torch.dtype]:
-    """Transformers 4.x calls this torch_dtype; 5.x renamed it to dtype."""
-    major = int(transformers.__version__.split(".", 1)[0])
-    return {"dtype" if major >= 5 else "torch_dtype": dtype}
+    """Use the non-deprecated model dtype keyword when the runtime supports it."""
+    components = transformers.__version__.split(".")
+    version = tuple(int(component.split("+", 1)[0]) for component in components[:2])
+    return {"dtype" if version >= (4, 56) else "torch_dtype": dtype}
+
+
+def tokenizer_load_kwargs() -> dict[str, bool]:
+    """Shared local tokenizer options for the student/teacher ID protocol."""
+    return {
+        "local_files_only": True,
+        # Transformers detects the legacy Mistral-family pre-tokenizer regex
+        # in some otherwise compatible checkpoint tokenizers (including
+        # tokenizer files copied into training checkpoints). Apply the
+        # upstream correction explicitly and identically to student/teacher.
+        "fix_mistral_regex": True,
+    }
 
 
 def inspect_model_assets(config: dict[str, Any]) -> dict[str, Any]:
@@ -164,10 +177,10 @@ def inspect_model_assets(config: dict[str, Any]) -> dict[str, Any]:
         if not (path / "config.json").is_file():
             raise FileNotFoundError(f"{role} checkpoint is missing config.json: {path}")
     student_tokenizer = AutoTokenizer.from_pretrained(
-        student_path, local_files_only=True
+        student_path, **tokenizer_load_kwargs()
     )
     teacher_tokenizer = AutoTokenizer.from_pretrained(
-        teacher_path, local_files_only=True
+        teacher_path, **tokenizer_load_kwargs()
     )
     student_config = AutoConfig.from_pretrained(student_path, local_files_only=True)
     teacher_config = AutoConfig.from_pretrained(teacher_path, local_files_only=True)
@@ -201,7 +214,7 @@ def load_models(config: dict[str, Any], device: torch.device):
     # This is intentionally the only runtime tokenizer.  Rollout response IDs
     # and the full prompt+response IDs are passed straight to teacher.forward;
     # teacher text is never decoded and re-tokenized.
-    tokenizer = AutoTokenizer.from_pretrained(student_path, local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(student_path, **tokenizer_load_kwargs())
     dtype = _dtype(model_cfg.get("dtype", "bfloat16"))
     attention = assets["attention_implementation"]
     common = {
@@ -278,7 +291,7 @@ def load_student_model(config: dict[str, Any], device: torch.device):
             f"student checkpoint is missing config.json: {student_path}"
         )
     student_config = AutoConfig.from_pretrained(student_path, local_files_only=True)
-    tokenizer = AutoTokenizer.from_pretrained(student_path, local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(student_path, **tokenizer_load_kwargs())
     dtype = _dtype(model_cfg.get("dtype", "bfloat16"))
     attention = choose_attention_implementation(
         model_cfg.get("attention_implementation", "auto")
@@ -348,7 +361,7 @@ def load_student_tokenizer(config: dict[str, Any]):
     lengths before starting vLLM or loading multi-billion-parameter models.
     """
     student_path = Path(config["models"]["student_path"]).resolve()
-    tokenizer = AutoTokenizer.from_pretrained(student_path, local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(student_path, **tokenizer_load_kwargs())
     tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
