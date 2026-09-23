@@ -61,6 +61,47 @@ mkdir -p "${LOG_ROOT}"
 CHECKPOINT_PATHS=()
 OUTPUT_PATHS=()
 LOG_PATHS=()
+
+resolve_checkpoint() {
+  local requested="$1"
+  local direct="${CHECKPOINT_ROOT}/${requested}"
+  if [[ -f "${direct}/config.json" ]]; then
+    printf '%s\n' "${direct}"
+    return 0
+  fi
+
+  local basename="${requested##*/}"
+  local candidate
+  local matches=()
+  while IFS= read -r candidate; do
+    if [[ -f "${candidate}/config.json" ]]; then
+      matches+=("${candidate}")
+    fi
+  done < <(
+    find "${CHECKPOINT_ROOT}" \
+      -mindepth 1 \
+      -maxdepth 4 \
+      -type d \
+      -name "${basename}" \
+      -print | sort
+  )
+
+  if [[ ${#matches[@]} -eq 1 ]]; then
+    echo "[resolve] ${requested} -> ${matches[0]}" >&2
+    printf '%s\n' "${matches[0]}"
+    return 0
+  fi
+  if [[ ${#matches[@]} -eq 0 ]]; then
+    echo "Checkpoint not found under ${CHECKPOINT_ROOT}: ${requested}" >&2
+    echo "Expected config.json at ${direct}/config.json or in a uniquely named nested directory." >&2
+    return 1
+  fi
+  echo "Checkpoint name is ambiguous under ${CHECKPOINT_ROOT}: ${requested}" >&2
+  printf '  %s\n' "${matches[@]}" >&2
+  echo "Pass a relative path such as cmt_opd/${requested} to disambiguate." >&2
+  return 1
+}
+
 for index in 0 1 2 3; do
   name="${CHECKPOINT_NAMES[$index]}"
   case "${name}" in
@@ -69,9 +110,7 @@ for index in 0 1 2 3; do
       exit 2
       ;;
   esac
-  checkpoint="${CHECKPOINT_ROOT}/${name}"
-  if [[ ! -f "${checkpoint}/config.json" ]]; then
-    echo "Checkpoint is missing config.json: ${checkpoint}" >&2
+  if ! checkpoint="$(resolve_checkpoint "${name}")"; then
     exit 2
   fi
   slug="${name//\//__}"

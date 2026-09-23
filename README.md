@@ -270,7 +270,10 @@ bash scripts/validate_lift_checkpoints_4gpu_b200.sh \
 
 Mỗi worker vẫn là một experiment single-GPU độc lập; không có gradient averaging giữa checkpoint.
 Log nằm trong `<MECHANISM_OUTPUT_ROOT>/logs/`, output dùng tên checkpoint, và `runs.tsv` ghi mapping
-checkpoint/GPU/path/status. Launcher từ chối ghi đè một result directory đã tồn tại.
+checkpoint/GPU/path/status. `CHECKPOINT_ROOT` có thể là method directory chứa checkpoint trực tiếp
+hoặc run directory chứa nested `cmt_opd/`; launcher tự resolve một kết quả duy nhất sâu tối đa bốn
+directory level. Nếu có nhiều checkpoint trùng tên, truyền relative path như
+`cmt_opd/checkpoint-000150`. Launcher từ chối ghi đè một result directory đã tồn tại.
 
 Config mặc định nằm ở `configs/qwen3_b200_lift_mechanism.yaml`: `M=8`, 10 G-bin, 2 state/cell
 (100 intervention), 2,000 bootstrap sample. Đặt

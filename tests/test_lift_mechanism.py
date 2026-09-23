@@ -210,7 +210,7 @@ def test_four_gpu_launcher_maps_one_checkpoint_to_each_gpu():
             "final",
         ]
         for name in names:
-            checkpoint = checkpoints / name
+            checkpoint = checkpoints / "cmt_opd" / name
             checkpoint.mkdir(parents=True)
             (checkpoint / "config.json").write_text("{}\n", encoding="utf-8")
         fake_runner = root / "fake-single-runner.sh"
@@ -249,7 +249,7 @@ def test_four_gpu_launcher_maps_one_checkpoint_to_each_gpu():
                 (capture / f"{name}.txt").read_text(encoding="utf-8").strip().split("|")
             )
             assert fields[0] == gpu
-            assert Path(fields[1]) == checkpoints / name
+            assert Path(fields[1]) == checkpoints / "cmt_opd" / name
             assert Path(fields[2]) == results / name
         manifest = (results / "runs.tsv").read_text(encoding="utf-8")
         assert manifest.count("completed") == 4
