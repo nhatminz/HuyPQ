@@ -12,7 +12,8 @@ Use the project's training environment with its installed requirements. The
 student must be a full Hugging Face checkpoint with the student tokenizer; the
 teacher and dataset come from the config. A single GPU must fit both models and
 the student's gradients/optimizer. Immutable model and optimizer copies occupy
-CPU RAM. Launch one process (no `torchrun` or vLLM).
+CPU RAM. Launch the coordinator directly (no `torchrun` or vLLM). By default
+it runs on one GPU; `--workers N` runs the selected interventions across N GPUs.
 
 ```bash
 python -m b200_experiment.lift_mechanism \
@@ -32,10 +33,47 @@ launcher, including with a custom training config. The mechanism runner does
 not call benchmark evaluation; its before/after rollouts are required experiment
 measurements and still run.
 
+## One experiment on four GPUs
+
+```bash
+CUDA_VISIBLE_DEVICES=4,5,6,7 PYTHONUNBUFFERED=1 \
+bash scripts/run_lift_mechanism.sh \
+  --workers 4 \
+  --device cuda:0 \
+  --checkpoint /absolute/path/to/checkpoint-000600 \
+  --output-dir /absolute/path/to/lift-mechanism-four-gpus \
+  --set models.teacher_path=/absolute/path/to/teacher \
+  --set data.path=/absolute/path/to/train.parquet \
+  --set data.prompt_key=problem
+```
+
+The visible physical GPUs 4, 5, 6, 7 map to worker devices `cuda:0` through
+`cuda:3`. Keep `--device cuda:0`; do not start four separate shell runs. You can
+also set `mechanism.workers: 4` in the YAML; `--workers` overrides that setting.
+
+The coordinator scores candidates and constructs **one global matched sample**
+on the first GPU, then releases its model/optimizer copies. Each spawned worker
+loads the same student checkpoint, frozen teacher, and optimizer and processes
+only its assigned states. The default 200 states split into 50 per GPU, not 200
+per GPU. Seeds depend on the state and phase, never the worker rank. There is no
+gradient synchronization: these are independent, one-step interventions starting
+from the same checkpoint. Other GPUs are idle during candidate collection;
+speedup applies to interventions and their before/after continuations, so total
+runtime is not guaranteed to decrease by exactly four times.
+
+Every GPU must fit both models and the student optimizer; this is work splitting,
+not model sharding. Host RAM must hold each worker's immutable model/optimizer
+snapshot. Shard outputs live in `workers/rank_000/`, etc. The coordinator verifies
+each state appears exactly once and merges the CSV and rollout costs into the
+usual top-level files before running analysis once. A failed worker aborts the
+run and prevents a final `complete.json`; partial worker outputs remain for
+diagnosis. Existing output directories are not reused automatically.
+
 Defaults in `configs/lift_mechanism.yaml`:
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
+| `mechanism.workers` | 1 | GPU replicas sharing one selected-state sample; CLI `--workers` overrides |
 | `mechanism.candidate_prompts` | 64 | Random dataset prompts after length filtering |
 | `mechanism.candidate_responses` | 2 | Original-student trajectories per prompt |
 | `mechanism.states_per_response` | 32 | Uniformly sampled visited decision states per trajectory, or all if shorter |

@@ -13,8 +13,13 @@ from b200_experiment.config import load_config
 from b200_experiment.lift_mechanism import (
     MechanismExperiment,
     discounted_downstream_cost,
+    execute_interventions,
+    merge_intervention_shards,
+    parallel_interventions,
+    read_states,
     reverse_kl,
     run,
+    write_states,
 )
 from b200_experiment.lift_mechanism_analysis import (
     analyze,
@@ -374,3 +379,97 @@ def test_default_config():
     assert config["mechanism"]["rollouts"] == 8
     assert config["selector"]["cmt_gamma"] == 1.0
     assert config["rollout"]["max_new_tokens"] == 4096
+    assert config["mechanism"]["workers"] == 1
+
+
+def _tiny_process_worker(rank, config, checkpoint, output, devices):
+    """Executed in a real spawned interpreter; replace only model loading."""
+    from unittest.mock import patch
+
+    from b200_experiment.lift_mechanism import intervention_worker
+
+    torch.set_num_threads(1)
+    with patch(
+        "b200_experiment.lift_mechanism.load_experiment",
+        side_effect=lambda *_: (setup_experiment(), {}, False, None),
+    ):
+        intervention_worker(rank, config, checkpoint, output, devices)
+
+
+def _failed_process_worker(rank, config, checkpoint, output, devices):
+    if rank == 1:
+        raise RuntimeError("synthetic worker failure")
+
+
+def test_four_process_interventions_match_single_process_and_merge_once(
+    tmp_path, monkeypatch
+):
+    from b200_experiment import lift_mechanism
+
+    states = [
+        {
+            "state_id": f"state_{i}",
+            "prompt_id": "NA",
+            "prefix_ids": [1, 2 + i % 3],
+            "downstream_horizon": 3,
+            "G_t": 0.12345678901234567,
+            "D_tilde": i * 0.01,
+            "token_position": i,
+        }
+        for i in range(9)
+    ]
+    sequential = tmp_path / "sequential"
+    sequential.mkdir()
+    expected = execute_interventions(setup_experiment(), states, sequential)
+    parallel = tmp_path / "parallel"
+    parallel.mkdir()
+    write_states(parallel / "selected_states.jsonl", states)
+    assert read_states(parallel / "selected_states.jsonl") == states
+    monkeypatch.setattr(lift_mechanism, "intervention_worker", _tiny_process_worker)
+    actual = parallel_interventions({}, tmp_path, parallel, ["cpu"] * 4)
+    pd.testing.assert_frame_equal(actual, expected, check_dtype=False, check_exact=True)
+    assert read_states(parallel / "rollout_costs.jsonl") == read_states(
+        sequential / "rollout_costs.jsonl"
+    )
+    assert len(actual) == 9 and actual.state_id.is_unique
+    counts = []
+    for rank in range(4):
+        shard = parallel / "workers" / f"rank_{rank:03d}"
+        done = json.loads((shard / "complete.json").read_text())
+        counts.append(done["n_states"])
+        ids = pd.read_csv(shard / "per_state.csv").state_id.tolist()
+        assert ids == [state["state_id"] for state in states[rank::4]]
+    assert counts == [3, 2, 2, 2]
+
+    # A corrupt/duplicated cost shard must be rejected even if its CSV is intact.
+    costs_path = parallel / "workers/rank_000/rollout_costs.jsonl"
+    costs = read_states(costs_path)
+    write_states(costs_path, [costs[0]] * len(costs))
+    with pytest.raises(ValueError, match="missing, duplicate, or unassigned"):
+        merge_intervention_shards(parallel, states, 4)
+
+
+def test_failed_worker_propagates_without_merged_outputs(tmp_path, monkeypatch):
+    from b200_experiment import lift_mechanism
+
+    write_states(
+        tmp_path / "selected_states.jsonl", [{"state_id": f"s{i}"} for i in range(4)]
+    )
+    monkeypatch.setattr(lift_mechanism, "intervention_worker", _failed_process_worker)
+    with pytest.raises(
+        torch.multiprocessing.ProcessRaisedException, match="synthetic worker failure"
+    ):
+        parallel_interventions({}, tmp_path, tmp_path, ["cpu"] * 2)
+    assert not (tmp_path / "per_state.csv").exists()
+    assert not (tmp_path / "complete.json").exists()
+
+
+def test_parallel_launch_rejects_missing_gpus_before_creating_output(
+    tmp_path, monkeypatch
+):
+    config = load_config("configs/lift_mechanism.yaml")
+    config["mechanism"]["workers"] = 4
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    with pytest.raises(ValueError, match="only 2 CUDA GPUs"):
+        run(config, tmp_path, tmp_path / "output", torch.device("cuda:0"))
+    assert not (tmp_path / "output").exists()

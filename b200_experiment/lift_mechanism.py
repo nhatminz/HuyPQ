@@ -1,14 +1,15 @@
 """Fixed-checkpoint LIFT (repository CMT) mechanism validation.
 
 Run with ``python -m b200_experiment.lift_mechanism --help``. This deliberately
-uses one HF process so every intervention and re-rollout sees the exact same
-model, with no stale inference-engine weights or distributed optimizer shards.
+uses independent HF workers for disjoint interventions, with one globally
+matched sample and no gradient synchronization or inference-engine weight cache.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.multiprocessing as mp
 
 from .config import apply_overrides, load_config, resolve_runtime_paths, save_config
 from .lift_mechanism_analysis import analyze, matched_sample
@@ -352,11 +354,158 @@ class MechanismExperiment:
             self.reset.restore()
 
 
-def run(config, checkpoint: Path, output: Path, device: torch.device):
-    from .data import filter_overlong_prompt_records, read_records
+def load_experiment(config, checkpoint: Path, device: torch.device):
+    """Load the identical frozen starting point in the coordinator or a worker."""
     from .models import load_models
     from .resume import restore_optimizer
     from .trainer import _make_optimizer
+
+    student, teacher, tokenizer, assets = load_models(config, device)
+    training = dict(config["training"])
+    if device.type != "cuda":
+        training["fused_optimizer"] = False
+    optimizer, fused = _make_optimizer(
+        [p for p in student.parameters() if p.requires_grad], training
+    )
+    restored = (
+        restore_optimizer(optimizer, checkpoint, device, model=student)
+        if (checkpoint / "optimizer.pt").exists()
+        else None
+    )
+    return (
+        MechanismExperiment(student, teacher, tokenizer, optimizer, config),
+        assets,
+        fused,
+        restored,
+    )
+
+
+def write_states(path: Path, states: list[dict]):
+    # Preserve scores and integer IDs/seeds exactly across worker boundaries.
+    with path.open("w", encoding="utf-8") as handle:
+        for state in states:
+            handle.write(json.dumps(state, allow_nan=False) + "\n")
+
+
+def read_states(path: Path) -> list[dict]:
+    with path.open(encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def execute_interventions(experiment, states: list[dict], output: Path, *, label=""):
+    results = []
+    with (output / "rollout_costs.jsonl").open("w", encoding="utf-8") as costs_file:
+        for index, state in enumerate(states):
+            result, costs = experiment.intervene(state)
+            results.append(result)
+            pd.DataFrame([result]).to_csv(
+                output / "per_state.csv", mode="a", header=index == 0, index=False
+            )
+            costs_file.write(json.dumps(costs, allow_nan=False) + "\n")
+            costs_file.flush()
+            print(
+                f"{label}Interventions {index + 1}/{len(states)}; "
+                f"downstream gain={result['downstream_gain_measured']:.6g}",
+                flush=True,
+            )
+    return pd.DataFrame(results)
+
+
+def intervention_worker(
+    rank: int, config, checkpoint: Path, output: Path, devices: list[str]
+):
+    """One model/optimizer replica per GPU; no DDP or gradient collectives."""
+    device = torch.device(devices[rank])
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+    states = read_states(output / "selected_states.jsonl")[rank :: len(devices)]
+    worker_output = output / "workers" / f"rank_{rank:03d}"
+    worker_output.mkdir(parents=True, exist_ok=False)
+    experiment, _, _, restored = load_experiment(config, checkpoint, device)
+    execute_interventions(experiment, states, worker_output, label=f"[worker {rank}] ")
+    # Written last: incomplete or failed shards must never enter final analysis.
+    (worker_output / "complete.json").write_text(
+        json.dumps(
+            {
+                "rank": rank,
+                "device": str(device),
+                "n_states": len(states),
+                "optimizer_step": restored.step if restored else None,
+            }
+        )
+        + "\n"
+    )
+
+
+def merge_intervention_shards(
+    output: Path, states: list[dict], workers: int
+) -> pd.DataFrame:
+    """Validate exact coverage and merge in original selection order, once."""
+    ordered_ids = [state["state_id"] for state in states]
+    if len(set(ordered_ids)) != len(ordered_ids):
+        raise ValueError("Selected states contain duplicate IDs")
+    frames, costs_by_id = [], {}
+    for rank in range(workers):
+        worker_output = output / "workers" / f"rank_{rank:03d}"
+        completed = json.loads((worker_output / "complete.json").read_text())
+        expected = set(ordered_ids[rank::workers])
+        if completed["rank"] != rank or completed["n_states"] != len(expected):
+            raise ValueError(
+                f"Worker {rank} completion manifest does not match its assignment"
+            )
+        frame = pd.read_csv(
+            worker_output / "per_state.csv",
+            dtype={"state_id": str, "prompt_id": str},
+            float_precision="round_trip",
+            keep_default_na=False,
+        )
+        costs = read_states(worker_output / "rollout_costs.jsonl")
+        cost_ids = [item["state_id"] for item in costs]
+        if (
+            len(frame) != len(expected)
+            or frame.state_id.duplicated().any()
+            or set(frame.state_id) != expected
+            or len(cost_ids) != len(expected)
+            or set(cost_ids) != expected
+        ):
+            raise ValueError(
+                f"Worker {rank} has missing, duplicate, or unassigned states"
+            )
+        frames.append(frame)
+        costs_by_id.update({item["state_id"]: item for item in costs})
+    merged = (
+        pd.concat(frames, ignore_index=True)
+        .set_index("state_id")
+        .loc[ordered_ids]
+        .reset_index()
+    )
+    merged.to_csv(output / "per_state.csv", index=False)
+    write_states(
+        output / "rollout_costs.jsonl",
+        [costs_by_id[state_id] for state_id in ordered_ids],
+    )
+    return merged
+
+
+def parallel_interventions(config, checkpoint: Path, output: Path, devices: list[str]):
+    states = read_states(output / "selected_states.jsonl")
+    if not devices or len(devices) > len(states):
+        raise ValueError(
+            "Worker count must be between one and the number of selected states"
+        )
+    # spawn propagates failures and terminates other workers; never wait forever
+    # for a filesystem barrier or merge a partial experiment.
+    mp.spawn(
+        intervention_worker,
+        args=(config, checkpoint, output, devices),
+        nprocs=len(devices),
+        join=True,
+    )
+    return merge_intervention_shards(output, states, len(devices))
+
+
+def run(config, checkpoint: Path, output: Path, device: torch.device):
+    from .data import filter_overlong_prompt_records, read_records
 
     settings = config["mechanism"]
     for key in (
@@ -374,7 +523,23 @@ def run(config, checkpoint: Path, output: Path, device: torch.device):
     if not 10 <= int(settings["g_bins"]) <= 20:
         raise ValueError("mechanism.g_bins must be between 10 and 20")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
-        raise ValueError("Launch directly with python, not multi-process torchrun")
+        raise ValueError("Launch with --workers N, not multi-process torchrun")
+    workers = int(settings.get("workers", 1))
+    if workers < 1 or workers > int(settings["g_bins"]) * 5 * int(
+        settings["states_per_cell"]
+    ):
+        raise ValueError(
+            "Worker count must be positive and no greater than the selected-state count"
+        )
+    if workers > 1:
+        if device.type != "cuda" or device.index not in (None, 0):
+            raise ValueError(
+                "With multiple workers, use --device cuda:0 and CUDA_VISIBLE_DEVICES to select GPUs"
+            )
+        if torch.cuda.device_count() < workers:
+            raise ValueError(
+                f"Requested {workers} workers but only {torch.cuda.device_count()} CUDA GPUs are visible"
+            )
     if (
         config["training"].get("use_lora", False)
         or (checkpoint / "adapter_config.json").exists()
@@ -387,25 +552,13 @@ def run(config, checkpoint: Path, output: Path, device: torch.device):
     output.mkdir(parents=True, exist_ok=False)
     config["models"]["student_path"] = str(checkpoint)
     save_config(config, output / "resolved_config.yaml")
-    student, teacher, tokenizer, assets = load_models(config, device)
-    training = dict(config["training"])
-    if device.type != "cuda":
-        training["fused_optimizer"] = False
-    optimizer, fused = _make_optimizer(
-        [p for p in student.parameters() if p.requires_grad], training
-    )
-    optimizer_path = checkpoint / "optimizer.pt"
-    restored = (
-        restore_optimizer(optimizer, checkpoint, device, model=student)
-        if optimizer_path.exists()
-        else None
-    )
-    experiment = MechanismExperiment(student, teacher, tokenizer, optimizer, config)
+    experiment, assets, fused, restored = load_experiment(config, checkpoint, device)
+    seed = experiment.seed
     records, files = read_records(
         config["data"]["path"], split=config["data"].get("split")
     )
     records, filtering = filter_overlong_prompt_records(
-        records, tokenizer, config["data"]
+        records, experiment.tokenizer, config["data"]
     )
     indices = np.random.default_rng(experiment.seed).choice(
         len(records),
@@ -424,7 +577,7 @@ def run(config, checkpoint: Path, output: Path, device: torch.device):
         "fused": fused,
         "optimizer_groups": [
             {key: value for key, value in group.items() if key != "params"}
-            for group in optimizer.param_groups
+            for group in experiment.optimizer.param_groups
         ],
         "gamma": experiment.gamma,
         "max_response_tokens": experiment.horizon,
@@ -439,50 +592,45 @@ def run(config, checkpoint: Path, output: Path, device: torch.device):
         "rollout_backend": "HF, current student weights; full policy top_p=1",
         "seed": experiment.seed,
         "tie_policy": "equal-count ranks; seeded random tie breaking",
+        "workers": workers,
+        "visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "parallelism": "candidate scoring and matching once on coordinator; disjoint state interventions on GPU replicas",
     }
     (output / "metadata.json").write_text(
         json.dumps(metadata, indent=2, default=str) + "\n"
     )
     candidates = experiment.collect_candidates(records)
-    candidates.to_json(
-        output / "candidate_states.jsonl",
-        orient="records",
-        lines=True,
-        double_precision=15,
-    )
+    write_states(output / "candidate_states.jsonl", candidates.to_dict("records"))
     selected = matched_sample(
         candidates,
         bins=int(settings["g_bins"]),
         per_cell=int(settings["states_per_cell"]),
         seed=experiment.seed,
     )
-    selected.to_json(
-        output / "selected_states.jsonl",
-        orient="records",
-        lines=True,
-        double_precision=15,
-    )
-    results = []
-    with (output / "rollout_costs.jsonl").open("w") as costs_file:
-        for index, state in enumerate(selected.to_dict("records")):
-            result, costs = experiment.intervene(state)
-            results.append(result)
-            pd.DataFrame([result]).to_csv(
-                output / "per_state.csv", mode="a", header=index == 0, index=False
-            )
-            costs_file.write(json.dumps(costs, allow_nan=False) + "\n")
-            costs_file.flush()
-            print(
-                f"Interventions {index + 1}/{len(selected)}; downstream gain={result['downstream_gain_measured']:.6g}",
-                flush=True,
-            )
+    states = selected.to_dict("records")
+    write_states(output / "selected_states.jsonl", states)
+    if workers == 1:
+        results = execute_interventions(experiment, states, output)
+    else:
+        # Release coordinator weights, moments and immutable CPU snapshots before
+        # worker 0 loads its own replica on that same GPU.
+        del experiment
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(
+            f"Distributing {len(states)} selected states across {workers} GPU workers",
+            flush=True,
+        )
+        results = parallel_interventions(
+            config, checkpoint, output, [f"cuda:{rank}" for rank in range(workers)]
+        )
     reports = analyze(
-        pd.DataFrame(results),
+        results,
         output / "analysis",
         bins=int(settings["g_bins"]),
         position_bins=int(settings["position_bins"]),
         bootstrap=int(settings["bootstrap"]),
-        seed=experiment.seed,
+        seed=seed,
     )
     (output / "complete.json").write_text(
         json.dumps({"n_states": len(results), "analyses": list(reports)}) + "\n"
@@ -500,6 +648,11 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help="GPU workers for one experiment; defaults to mechanism.workers",
+    )
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = parser.parse_args()
     config = load_config(args.config)
@@ -508,6 +661,8 @@ def main():
     )["mechanism"]
     config["mechanism"] = {**defaults, **config.get("mechanism", {})}
     config = resolve_runtime_paths(apply_overrides(config, args.set))
+    if args.workers is not None:
+        config["mechanism"]["workers"] = args.workers
     run(
         config,
         args.checkpoint.expanduser().resolve(),
