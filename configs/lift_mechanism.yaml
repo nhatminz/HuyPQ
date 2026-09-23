@@ -1,0 +1,23 @@
+_base_: qwen3_b200_cmt.yaml
+
+# Mechanism validation only: no start, periodic, or final benchmark evaluation.
+training_evaluation:
+  enabled: false
+  eval_at_start: false
+  eval_at_end: false
+
+# Use the checkpoint's resolved training config as the base if its OPD optimizer
+# settings or LIFT scoring settings differ. optimizer.pt, when present, restores
+# the actual moments, step counters, learning rate, and parameter groups.
+mechanism:
+  seed: 42
+  candidate_prompts: 64
+  candidate_responses: 2
+  states_per_response: 32
+  g_bins: 10
+  states_per_cell: 4
+  rollouts: 8
+  rollout_batch_size: 1
+  bootstrap: 2000
+  # Set to 2 or more to additionally cross local-value bins with position bins.
+  position_bins: 1

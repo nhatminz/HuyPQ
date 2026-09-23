@@ -30,6 +30,10 @@ từ [`thunlp/OPD`](https://github.com/thunlp/OPD) tại commit
 Xem lệnh đầy đủ từ shell mới trong [`RUN_B200.md`](RUN_B200.md), hoặc runbook tiếng Việt có lệnh
 copy-paste cho train/resume/eval/plot trong [`HUONG_DAN_CHAY.md`](HUONG_DAN_CHAY.md).
 
+Kiểm chứng cơ chế LIFT/CMT tại checkpoint cố định: xem
+[`LIFT_MECHANISM.md`](LIFT_MECHANISM.md) để chạy thí nghiệm matched-G, một bước
+reverse-KL cục bộ và re-rollout, cùng phân tích bootstrap và matched-local-gain.
+
 ## Runtime paths
 
 Mọi asset được resolve từ đúng một giá trị:
