@@ -2,7 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+import os
+import subprocess
+import tempfile
 from types import SimpleNamespace
+from pathlib import Path
 
 from b200_experiment.lift_mechanism import (
     _restore_optimizer_snapshot,
@@ -188,3 +192,64 @@ def test_optimizer_intervention_does_not_mutate_pristine_snapshot():
     assert [
         state["step"].item() for state in snapshot["state"].values()
     ] == original_steps
+
+
+def test_four_gpu_launcher_maps_one_checkpoint_to_each_gpu():
+    repository = Path(__file__).resolve().parents[1]
+    launcher = repository / "scripts/validate_lift_checkpoints_4gpu_b200.sh"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        checkpoints = root / "checkpoints"
+        results = root / "results"
+        capture = root / "capture"
+        capture.mkdir()
+        names = [
+            "checkpoint-000100",
+            "checkpoint-000200",
+            "checkpoint-000300",
+            "final",
+        ]
+        for name in names:
+            checkpoint = checkpoints / name
+            checkpoint.mkdir(parents=True)
+            (checkpoint / "config.json").write_text("{}\n", encoding="utf-8")
+        fake_runner = root / "fake-single-runner.sh"
+        fake_runner.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'checkpoint="$1"\n'
+            'output="$2"\n'
+            'mkdir -p "$output"\n'
+            'name="$(basename "$checkpoint")"\n'
+            'printf \'%s|%s|%s\\n\' "$CUDA_VISIBLE_DEVICES" "$checkpoint" "$output" '
+            '> "$CAPTURE_DIR/$name.txt"\n',
+            encoding="utf-8",
+        )
+        fake_runner.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "LIFT_MECHANISM_GPUS": "4,5,6,7",
+                "MECHANISM_OUTPUT_ROOT": str(results),
+                "LIFT_MECHANISM_SINGLE_RUNNER": str(fake_runner),
+                "CAPTURE_DIR": str(capture),
+            }
+        )
+        completed = subprocess.run(
+            ["bash", str(launcher), str(checkpoints), *names, "--set", "x=1"],
+            cwd=repository,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+        for name, gpu in zip(names, ("4", "5", "6", "7")):
+            fields = (
+                (capture / f"{name}.txt").read_text(encoding="utf-8").strip().split("|")
+            )
+            assert fields[0] == gpu
+            assert Path(fields[1]) == checkpoints / name
+            assert Path(fields[2]) == results / name
+        manifest = (results / "runs.tsv").read_text(encoding="utf-8")
+        assert manifest.count("completed") == 4

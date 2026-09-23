@@ -255,6 +255,23 @@ scripts/validate_lift_mechanism_b200.sh \
   outputs/lift_mechanism_step150
 ```
 
+Để đánh giá bốn checkpoint độc lập cùng lúc trên bốn GPU vật lý 4, 5, 6, 7, truyền
+directory cha và đúng bốn tên checkpoint. Tên thứ nhất đến thứ tư lần lượt được map sang
+GPU 4 đến 7:
+
+```bash
+LIFT_MECHANISM_GPUS=4,5,6,7 \
+MECHANISM_OUTPUT_ROOT=/path/to/lift_mechanism_results \
+bash scripts/validate_lift_checkpoints_4gpu_b200.sh \
+  /path/to/cmt_opd \
+  checkpoint-000150 checkpoint-000300 checkpoint-000450 final \
+  --set mechanism_validation.continuations=8
+```
+
+Mỗi worker vẫn là một experiment single-GPU độc lập; không có gradient averaging giữa checkpoint.
+Log nằm trong `<MECHANISM_OUTPUT_ROOT>/logs/`, output dùng tên checkpoint, và `runs.tsv` ghi mapping
+checkpoint/GPU/path/status. Launcher từ chối ghi đè một result directory đã tồn tại.
+
 Config mặc định nằm ở `configs/qwen3_b200_lift_mechanism.yaml`: `M=8`, 10 G-bin, 2 state/cell
 (100 intervention), 2,000 bootstrap sample. Đặt
 `--set mechanism_validation.position_bins=4` để additionally stratify theo token position, hoặc
