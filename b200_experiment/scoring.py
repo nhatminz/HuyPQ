@@ -636,3 +636,170 @@ def score_student_teacher_rollout(
         )
 
     return finish(student_batches), finish(teacher_batches)
+
+
+def reverse_kl_next_token(
+    student,
+    teacher,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    *,
+    student_temperature: float = 1.0,
+    teacher_temperature: float = 1.0,
+) -> torch.Tensor:
+    """Return exact ``KL(student || teacher)`` at the next-token state.
+
+    The student side intentionally remains differentiable.  This is used by
+    the LIFT mechanism intervention, where a single optimizer step must be
+    driven only by the local reverse-KL and not by the LIFT score itself.
+    """
+    if input_ids.ndim != 2 or attention_mask.shape != input_ids.shape:
+        raise ValueError("input_ids and attention_mask must share shape [batch, time]")
+    if input_ids.shape[1] <= 0:
+        raise ValueError("A next-token state requires a non-empty prefix")
+    if student_temperature <= 0 or teacher_temperature <= 0:
+        raise ValueError("Reverse-KL temperatures must be positive")
+    teacher.eval()
+    common_kwargs = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "position_ids": position_ids_from_mask(attention_mask),
+        "use_cache": False,
+        "return_dict": True,
+    }
+    with torch.inference_mode():
+        teacher_kwargs = dict(common_kwargs)
+        if supports_response_only_logits(teacher):
+            teacher_kwargs["logits_to_keep"] = 1
+        teacher_output = teacher(**teacher_kwargs)
+        teacher_logits = teacher_output.logits[:, -1, :].float() / float(
+            teacher_temperature
+        )
+        teacher_log_probs = torch.log_softmax(teacher_logits, dim=-1)
+    # Inference tensors cannot be saved for the differentiable student's
+    # backward pass. Materialize an ordinary frozen tensor explicitly.
+    with torch.inference_mode(False):
+        teacher_log_probs = teacher_log_probs.detach().clone()
+    del teacher_output, teacher_logits
+    student_kwargs = dict(common_kwargs)
+    if supports_response_only_logits(student):
+        student_kwargs["logits_to_keep"] = 1
+    student_output = student(**student_kwargs)
+    student_logits = student_output.logits[:, -1, :].float() / float(
+        student_temperature
+    )
+    student_log_probs = torch.log_softmax(student_logits, dim=-1)
+    if student_log_probs.shape != teacher_log_probs.shape:
+        raise ValueError("Student and teacher next-token vocabularies must match")
+    probabilities = student_log_probs.exp()
+    return (probabilities * (student_log_probs - teacher_log_probs)).sum(dim=-1)
+
+
+@torch.inference_mode()
+def score_reverse_kl_rollout(
+    student,
+    teacher,
+    rollout: RolloutBatch,
+    *,
+    score_chunk_steps: int = 32,
+    micro_batch_size: int | None = None,
+    trim_padding: bool = True,
+    length_bucketed: bool = True,
+    student_temperature: float = 1.0,
+    teacher_temperature: float = 1.0,
+) -> torch.Tensor:
+    """Score exact full-vocabulary reverse-KL at every rollout state.
+
+    The returned ``[B, T]`` tensor is zero on post-EOS padding.  Unlike the
+    compact OPD/CMT scorer, this routine performs the full vocabulary
+    reduction required by the mechanism-validation estimand.
+    """
+    student.eval()
+    teacher.eval()
+    if student_temperature <= 0 or teacher_temperature <= 0:
+        raise ValueError("Reverse-KL temperatures must be positive")
+    start = rollout.prompt_width - 1
+    width = rollout.response_ids.shape[1]
+    batch_size = rollout.input_ids.shape[0]
+    if width <= 0:
+        return torch.zeros(
+            (batch_size, 0), dtype=torch.float32, device=rollout.input_ids.device
+        )
+    score_micro_batch = (
+        batch_size if micro_batch_size is None else max(1, int(micro_batch_size))
+    )
+    response_lengths = rollout.valid_mask.long().sum(dim=-1)
+    if bool(response_lengths.le(0).any()):
+        raise ValueError(
+            "Every rollout trajectory must contain at least one valid token"
+        )
+    prefix_mask = torch.arange(width, device=rollout.valid_mask.device).unsqueeze(0)
+    prefix_mask = prefix_mask < response_lengths.unsqueeze(1)
+    if not torch.equal(prefix_mask, rollout.valid_mask.bool()):
+        raise ValueError("Rollout valid_mask must be a contiguous response prefix")
+    order = torch.arange(batch_size, device=rollout.input_ids.device)
+    if length_bucketed and score_micro_batch > 1:
+        order = torch.argsort(response_lengths, descending=True, stable=True)
+    batches: list[torch.Tensor] = []
+    chunk_steps = max(1, int(score_chunk_steps))
+    for batch_begin in range(0, batch_size, score_micro_batch):
+        indices = order[batch_begin : batch_begin + score_micro_batch]
+        local_width = width
+        if trim_padding:
+            local_width = int(response_lengths.index_select(0, indices).max().item())
+        input_stop = start + local_width if trim_padding else None
+        input_ids = rollout.input_ids.index_select(0, indices)[:, :input_stop]
+        attention_mask = rollout.attention_mask.index_select(0, indices)[:, :input_stop]
+        common_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids_from_mask(attention_mask),
+            "use_cache": False,
+            "return_dict": True,
+        }
+        student_kwargs = dict(common_kwargs)
+        teacher_kwargs = dict(common_kwargs)
+        response_only_student = (
+            input_stop is not None and supports_response_only_logits(student)
+        )
+        response_only_teacher = (
+            input_stop is not None and supports_response_only_logits(teacher)
+        )
+        if response_only_student:
+            student_kwargs["logits_to_keep"] = local_width
+        if response_only_teacher:
+            teacher_kwargs["logits_to_keep"] = local_width
+        student_output = student(**student_kwargs)
+        teacher_output = teacher(**teacher_kwargs)
+        student_logits = (
+            student_output.logits[:, -local_width:, :]
+            if response_only_student
+            else student_output.logits[:, start : start + local_width, :]
+        )
+        teacher_logits = (
+            teacher_output.logits[:, -local_width:, :]
+            if response_only_teacher
+            else teacher_output.logits[:, start : start + local_width, :]
+        )
+        if student_logits.shape != teacher_logits.shape:
+            raise ValueError("Student and teacher rollout logits must share one shape")
+        chunks = []
+        for begin in range(0, local_width, chunk_steps):
+            end = min(begin + chunk_steps, local_width)
+            log_p = torch.log_softmax(
+                student_logits[:, begin:end].float() / float(student_temperature),
+                dim=-1,
+            )
+            log_q = torch.log_softmax(
+                teacher_logits[:, begin:end].float() / float(teacher_temperature),
+                dim=-1,
+            )
+            chunks.append((log_p.exp() * (log_p - log_q)).sum(dim=-1))
+        local = torch.cat(chunks, dim=1)
+        local = _pad_response_time(local, width)
+        local = torch.where(
+            rollout.valid_mask.index_select(0, indices), local, torch.zeros_like(local)
+        )
+        batches.append(local)
+        del student_output, teacher_output, student_logits, teacher_logits
+    return torch.cat(batches, dim=0).index_select(0, torch.argsort(order))

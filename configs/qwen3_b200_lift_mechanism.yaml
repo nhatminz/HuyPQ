@@ -1,0 +1,28 @@
+_base_: qwen3_b200_cmt.yaml
+
+# LIFT is the renamed CMT method. This file configures the fixed-checkpoint
+# mechanism-validation experiment, not a training run.
+mechanism_validation:
+  seed: 42
+  # Candidate states are sampled from fresh fixed-checkpoint student rollouts.
+  candidate_prompt_count: 32
+  candidate_prompt_batch_size: 4
+  candidate_responses_per_prompt: 4
+  candidate_states_per_trajectory: 16
+
+  # Primary matched-G design: 10 G bins x 5 D quintiles x 2 states/cell.
+  g_bins: 10
+  d_quantiles: 5
+  samples_per_cell: 2
+
+  # Independent before/after continuations. The continuation horizon is
+  # rollout.max_new_tokens, and each state's remaining budget is reduced by
+  # its zero-based token position to match LIFT's finite-response horizon.
+  continuations: 8
+  kl_score_micro_batch_size: 1
+  kl_score_chunk_steps: 32
+
+  bootstrap_samples: 2000
+  local_gain_bins: 10
+  # Set to e.g. 4 to additionally match within token-position quantile strata.
+  position_bins: 0

@@ -8,7 +8,12 @@ import time
 from pathlib import Path
 
 from .autotune import run_batch_autotune
-from .config import apply_overrides, load_with_overlays, resolve_runtime_paths, save_config
+from .config import (
+    apply_overrides,
+    load_with_overlays,
+    resolve_runtime_paths,
+    save_config,
+)
 from .evaluation import (
     aggregate_evaluations,
     configured_benchmark_names,
@@ -16,6 +21,10 @@ from .evaluation import (
     evaluate_suite,
 )
 from .evaluation_history import record_checkpoint_evaluation
+from .lift_mechanism import (
+    analyze_lift_mechanism_csv,
+    run_lift_mechanism_validation,
+)
 from .plotting import (
     plot_cmt_score_distributions,
     plot_results,
@@ -189,7 +198,9 @@ def _evaluate_checkpoint(args) -> dict:
                 )
             finally:
                 resolved.unlink(missing_ok=True)
-    return _record_standalone_history(args, config, suite, time.perf_counter() - started)
+    return _record_standalone_history(
+        args, config, suite, time.perf_counter() - started
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -316,7 +327,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--methods",
         nargs="+",
         choices=(
-            "opd", "pure-opd", "ta", "ta-opd", "rac", "bellman-rac", "pgt", "cmt", "grpo", "iw", "iw-opd"
+            "opd",
+            "pure-opd",
+            "ta",
+            "ta-opd",
+            "rac",
+            "bellman-rac",
+            "pgt",
+            "cmt",
+            "grpo",
+            "iw",
+            "iw-opd",
         ),
         help="One or more methods to plot in the requested order",
     )
@@ -351,6 +372,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--plot-name",
         help="Optional plot directory name; an unused suffix is added on collision",
     )
+
+    mechanism = commands.add_parser(
+        "validate-lift-mechanism",
+        help="Run the fixed-checkpoint LIFT (formerly CMT) mechanism experiment",
+    )
+    mechanism.add_argument("--config", required=True)
+    mechanism.add_argument("--overlay", action="append", default=[])
+    mechanism.add_argument(
+        "--set", action="append", default=[], dest="overrides", metavar="KEY=VALUE"
+    )
+    mechanism.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Fixed HF student checkpoint; optimizer.pt is restored when present",
+    )
+    mechanism.add_argument("--output", required=True)
+
+    mechanism_analysis = commands.add_parser(
+        "analyze-lift-mechanism",
+        help="Rebuild matched analyses and figures from a LIFT per-state CSV",
+    )
+    mechanism_analysis.add_argument("--csv", required=True)
+    mechanism_analysis.add_argument("--output", required=True)
+    mechanism_analysis.add_argument("--bootstrap-samples", type=int, default=2000)
+    mechanism_analysis.add_argument("--seed", type=int, default=42)
+    mechanism_analysis.add_argument("--local-gain-bins", type=int, default=10)
+    mechanism_analysis.add_argument("--position-bins", type=int, default=0)
     return parser
 
 
@@ -426,6 +474,19 @@ def main(argv: list[str] | None = None) -> int:
             run_name=args.run_name,
             plot_name=args.plot_name,
             output_root=args.output_dir,
+        )
+    elif args.command == "validate-lift-mechanism":
+        result = run_lift_mechanism_validation(
+            _configured(args), args.checkpoint, args.output
+        )
+    elif args.command == "analyze-lift-mechanism":
+        result = analyze_lift_mechanism_csv(
+            args.csv,
+            args.output,
+            bootstrap_samples=args.bootstrap_samples,
+            seed=args.seed,
+            local_gain_bins=args.local_gain_bins,
+            position_bins=args.position_bins,
         )
     else:
         raise AssertionError(args.command)

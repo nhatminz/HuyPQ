@@ -240,6 +240,36 @@ giá trị Step-0 đã căn chỉnh khi so sánh OPD với CMT-OPD. Evaluator b�
 **Measured target result:** chưa chạy trên máy B200; `scripts/smoke_test_b200.sh` sẽ cập nhật block này.
 <!-- B200_AUTOTUNE_RESULT_END -->
 
+## LIFT mechanism validation (tên cũ: CMT)
+
+`validate-lift-mechanism` kiểm tra trực tiếp cơ chế tại một checkpoint cố định. Runner lấy
+`G_t=gain` và `D_tilde=sequential_gain_raw` từ implementation LIFT/CMT trước update, tạo thiết kế
+10 G-bin × 5 D-quintile cân bằng, rồi với từng state luôn restore cùng model và optimizer state.
+Intervention là đúng một AdamW step bằng exact full-vocabulary `KL(student || teacher)` tại prefix;
+`D_tilde` không đi vào loss. Hai phía trước/sau dùng các continuation mới độc lập và cùng `gamma`,
+horizon hữu hạn của LIFT.
+
+```bash
+scripts/validate_lift_mechanism_b200.sh \
+  /path/to/checkpoint-000150 \
+  outputs/lift_mechanism_step150
+```
+
+Config mặc định nằm ở `configs/qwen3_b200_lift_mechanism.yaml`: `M=8`, 10 G-bin, 2 state/cell
+(100 intervention), 2,000 bootstrap sample. Đặt
+`--set mechanism_validation.position_bins=4` để additionally stratify theo token position, hoặc
+`--set mechanism_validation.continuations=16` cho `M=16`.
+
+Output chính là `per_state.csv`, `primary_downstream_gain_by_D_quintile.png`, bảng 95% bootstrap CI,
+within-G-bin Spearman, sign agreement, và bộ robustness được rematch trực tiếp theo measured
+`local_gain`. Có thể dựng lại toàn bộ analysis mà không chạy model:
+
+```bash
+python -m b200_experiment.cli analyze-lift-mechanism \
+  --csv outputs/lift_mechanism_step150/per_state.csv \
+  --output outputs/lift_mechanism_step150/reanalysis
+```
+
 ## Output và resume
 
 Fresh launch tự tạo tên:
