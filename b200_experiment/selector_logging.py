@@ -279,13 +279,35 @@ class SelectedTokenLogger:
                         "transition_weight",
                         "support_coverage",
                         "teacher_deficit",
+                        "signed_reachability_shift",
+                        "compatibility_weight",
                         "marginal_flux",
+                        "downstream_effect",
                         "successor_excess",
                         "sequential_gain",
                         "learning_value",
                         "s_CMT",
                     ],
                 }[method],
+                "cmt_downstream_semantics": (
+                    {
+                        "compatibility_weight": (
+                            "frozen raw-mass min(1,q(y)/p(y)) confidence"
+                        ),
+                        "signed_reachability_shift": (
+                            "centered conditional log-ratio r_U(y)-E_pU[r_U]"
+                        ),
+                        "marginal_flux": (
+                            "compatibility_weight * signed_reachability_shift"
+                        ),
+                        "downstream_effect": (
+                            "gamma * marginal_flux * successor_excess"
+                        ),
+                        "teacher_deficit": "diagnostic only; never gates D_t",
+                    }
+                    if method == "cmt"
+                    else None
+                ),
             }
             if self.rank == 0:
                 with (self.root / "manifest.json").open(
@@ -340,7 +362,10 @@ class SelectedTokenLogger:
                 "transition_weight",
                 "support_coverage",
                 "teacher_deficit",
+                "signed_reachability_shift",
+                "compatibility_weight",
                 "marginal_flux",
+                "downstream_effect",
                 "successor_excess",
                 "sequential_gain",
                 "learning_value",
@@ -426,7 +451,10 @@ class TokenScoreStatsLogger:
                 "support_coverage": (0.0, 1.0),
                 "coverage_correction": (0.0, 1.0),
                 "teacher_deficit": (0.0, 1.0),
+                "signed_reachability_shift": (-100.0, 100.0),
+                "compatibility_weight": (0.0, 1.0),
                 "marginal_flux": (-100.0, 100.0),
+                "downstream_effect": (-100.0, 100.0),
                 "common_mass_derivative": (-10.0, 10.0),
                 "R": (-100.0, 100.0),
                 "M": (0.0, 100.0),
@@ -471,6 +499,12 @@ class TokenScoreStatsLogger:
                     ),
                     "w": "final weight used by the OPD loss",
                 },
+                "cmt_downstream_semantics": (
+                    "frozen compatibility times signed centered visitation shift; "
+                    "teacher_deficit is diagnostic only"
+                    if method == "cmt"
+                    else None
+                ),
                 "note": "D values outside [0,10] are counted in underflow/overflow; normalized quantities use [0,1].",
             }
             (self.root / "manifest.json").write_text(
@@ -568,7 +602,10 @@ class CMTTokenAuditLogger:
         "successor_value",
         "successor_excess_total",
         "successor_excess_average",
+        "signed_reachability_shift",
+        "compatibility_weight",
         "marginal_flux",
+        "downstream_effect",
         "sequential_gain",
         "sequential_gain_raw",
         "sequential_gain_robust",
@@ -646,6 +683,19 @@ class CMTTokenAuditLogger:
                 "raw_aliases": {
                     "sequential_gain": "sequential_gain_raw",
                     "successor_R": "successor_excess_total (not successor_return)",
+                },
+                "downstream_semantics": {
+                    "compatibility_weight": (
+                        "frozen raw-mass min(1,q(y)/p(y)) confidence"
+                    ),
+                    "signed_reachability_shift": (
+                        "centered conditional log-ratio r_U(y)-E_pU[r_U]"
+                    ),
+                    "marginal_flux": (
+                        "compatibility_weight * signed_reachability_shift"
+                    ),
+                    "downstream_effect": ("gamma * marginal_flux * successor_excess"),
+                    "teacher_deficit": "diagnostic only; never gates D_t",
                 },
                 "heatmap_enabled": self.heatmap_enabled,
             }

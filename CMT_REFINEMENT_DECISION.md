@@ -224,20 +224,29 @@ E_t = R_t-g_tM_t
 \]
 
 The baseline is not a batch statistic: it is the current state's own
-support-matched local opportunity. Hold `m_p,m_q` fixed while the local
-conditional student distribution follows the mirror path. Then
+support-matched local opportunity.  At the unperturbed policy define the raw
+compatibility
 
 \[
-\dot{\widetilde K}_{U,t}f
-=\sum_{a:m_pp_U(a)<m_qq_U(a)}
-m_p p_U(a)(r_U(a)-\bar r_U)f(sa),
+c_t(a)=\min\left(1,\frac{m_qq_U(a)}{m_pp_U(a)}\right).
 \]
 
-so the sequential marginal derivative is
+Unlike the Bellman accessibility operator, the downstream derivative does not
+differentiate the `min` boundary.  It freezes `c_t(a)` as a bounded confidence
+weight while the conditional student follows the teacher-directed mirror path,
+`p_{U,\eta}(a) proportional to p_U(a) exp(eta r_U(a))`.  Define the compatible
+visitation surrogate
 
 \[
-D_t=\gamma\sum_{a:m_pp_U(a)<m_qq_U(a)}
-m_p p_U(a)(r_U(a)-\bar r_U)
+\mathcal A_t(\eta;f)=m_p\sum_{a\in U}p_{U,\eta}(a)c_t(a)f(sa).
+\]
+
+At `\eta=0`, `\mathcal A_t(0;f)=\widetilde K_U f`, so the baseline value still
+has the raw truncated-kernel semantics.  Its signed first derivative is
+
+\[
+D_t=\gamma m_p\sum_{a\in U}p_U(a)c_t(a)
+(r_U(a)-\bar r_U)
 \bigl[R_{t+1}(sa)-g_tM_{t+1}(sa)\bigr].
 \]
 
@@ -254,7 +263,8 @@ the frozen-descendant local objective
 \[
 \mathcal J_t(\eta)=
  KL(p_{U,t}\|q_{U,t})-KL(p_{U,t,\eta}\|q_{U,t})
- +E_t(p_{U,t,\eta}),
+ +\gamma\mathcal A_t\!\left(\eta;
+ R_{t+1}-g_tM_{t+1}\right),
 \]
 
 where the descendant returns/masses and the root baseline `g_t` are held fixed
@@ -279,9 +289,10 @@ production tuning knob.
 2. If `g_t=g` and `a_t=a<1`, the same cancellation holds pathwise; survival
    changes occupancy but not relative opportunity.
 3. If one future state has high `g` amid low-g states, the successor contrast is
-   positive before that state when it exceeds the current local baseline. A
-   teacher-deficit action receives extra emphasis only when its observed
-   continuation carries excess opportunity.
+   positive before that state when it exceeds the current local baseline. Its
+   signed effect is compatibility-weighted: the action can receive more or
+   less emphasis depending on the centered visitation shift and successor
+   excess, without a hard `p<q` gate.
 4. Invalid padding/termination resets the scan. Adding valid low-opportunity
    tokens can matter only through a genuine excess relative to the current
    state, not through a batch-length statistic.
@@ -304,22 +315,23 @@ marginal term estimator is
 
 \[
 \widehat{D}_t=
-\gamma\mathbf 1\{Y_t\in U_t,\,p_t(Y_t)<q_t(Y_t)\}
+\gamma\mathbf 1\{Y_t\in U_t\}
+\min\left(1,\frac{q_t(Y_t)}{p_t(Y_t)}\right)
 (r_{U,t}(Y_t)-\bar r_{U,t})
 \bigl[\hat R_{t+1}-g_t\hat M_{t+1}\bigr].
 \]
 
-Because `R` and `M` enter linearly, this bounded one-rollout estimator is
-unbiased for the **raw truncated** local excess derivative under frozen
-descendants and `Y~p`. It is not an unbiased estimator of the old conditional
-kernel; that is an intentional estimand change. It is also not unbiased for a
-shared-parameter Transformer update.
+Because `R` and `M` enter linearly, this one-rollout estimator is unbiased for
+the **frozen-compatibility visitation derivative** above under frozen
+descendants and `Y~p`.  The raw truncated kernel still defines Bellman
+accessibility, but its `min` boundary is not differentiated for `D_t`.  The
+estimator is not unbiased for a shared-parameter Transformer update.
 
 Conditionally on the successor second moment, its second moment is
 
 \[
 \mathbb E[\widehat D_t^2\mid s]
-=\sum_{a\in U}p(a)\mathbf1_{p(a)<q(a)}
+=\sum_{a\in U}p(a)(c_t(a))^2
 (r_U(a)-\bar r_U)^2
 \mathbb E\left[(R_{t+1}(sa)-g_tM_{t+1}(sa))^2\right].
 \]
@@ -327,8 +339,9 @@ Conditionally on the successor second moment, its second moment is
 There is no `1/m_p` amplification and every transition factor is bounded by one;
 future-return variance can still grow with a long or highly variable suffix. The
 implementation logs `support_coverage`, `conditional_support_common_mass`,
-`support_common_mass`, `transition_weight`, `R`, `M`, `H`, `successor_excess`,
-and `sequential_gain`; it does not silently clip them.
+`support_common_mass`, `transition_weight`, `signed_reachability_shift`,
+`compatibility_weight`, `marginal_flux`, `downstream_effect`, `R`, `M`, `H`,
+`successor_excess`, and `sequential_gain`; it does not silently clip them.
 
 ### Old versus new estimator
 
@@ -366,14 +379,16 @@ interpretive change, not a hidden normalization.
 
 ### Rao–Blackwellization boundary
 
-The local gain `g_U`, raw/conditional support common masses, and common-mass derivative
+The local gain `g_U` and raw/conditional support common masses are summed
+exactly over `U`.  For historical comparisons, the old hard-gated common-mass
+derivative
 
 \[
 \phi_U=\sum_{a:m_pp_U(a)<m_qq_U(a)}m_pp_U(a)(r_U(a)-\bar r_U)
 \]
 
-are summed exactly over `U`. This is the available action-space
-Rao–Blackwellization and costs only `O(|U|)`. The future term contains
+is retained as an audit-only diagnostic, but it is not used in `D_t`.  These
+exact local reductions cost only `O(|U|)`. The future term contains
 action-specific successor excess values. Summing them over `U` would require
 evaluating those counterfactual successors or a learned Q/critic, both
 disallowed. The directly available control variate is the root state's own
@@ -421,8 +436,9 @@ CMT's sequential term is exactly the right derivative of a finite-horizon
 
 * the current `p_U` changes along the teacher-directed mirror path;
 * successor values `R(sa), M(sa)` are held fixed;
-* the common-mass transition is the raw Top-K truncated killed kernel
-  `\widetilde K_U`;
+* the Bellman transition is the raw Top-K truncated killed kernel
+  `\widetilde K_U`, while its baseline compatibility is frozen when
+  differentiating the downstream visitation surrogate;
 * the root local baseline `g_t` is held fixed during the derivative.
 
 It is not the derivative of the full neural training trajectory. Parameter sharing,
@@ -452,8 +468,10 @@ for student on-policy rollout:
     k_hat <- accept
     R, M <- reverse_scan(g, k_hat), reverse_scan(1, k_hat)
     excess_next <- R[next] - g * M[next]
-    flux_hat <- inU * 1[rY_raw > 0] * (rU[Y] - E_pU[rU])
-    L <- g + lambda * gamma * flux_hat * excess_next
+    signed_shift <- inU * (rU[Y] - E_pU[rU])
+    flux_hat <- accept * signed_shift
+    downstream_effect <- gamma * flux_hat * excess_next
+    L <- g + lambda * downstream_effect
 
     gather L globally
     w <- Gibbs allocation under KL(w || uniform) <= epsilon
@@ -541,9 +559,10 @@ Do not claim novel Fisher geometry, maximal coupling, Gibbs allocation, or Bellm
 recursion individually. The strongest defensible claim is narrower:
 
 > CMT-OPD is a support-matched OPD allocation method that derives a local-baseline
-> excess successor teachability term from a raw Top-K truncated common-mass
-> kernel, while local learning geometry remains on the same conditional Top-K
-> simplex optimized by OPD; its strict student rollout estimator is bounded and
+> excess successor teachability term using frozen raw-mass compatibility and a
+> signed conditional visitation derivative, while local learning geometry
+> remains on the same conditional Top-K simplex optimized by OPD; its strict
+> student rollout estimator uses a bounded compatibility factor and
 > uses no inverse-coverage correction, critic, or counterfactual rollout.
 
 The construction is new only at this full methodology/research-question level
@@ -554,17 +573,18 @@ This claim deliberately excludes support projection and Bellman/TD recursion as
 novel by themselves. Recent Bellman-distillation work already combines a reduced
 action support with soft Bellman/TD targets ([AAAI 2026, *Language Model
 Distillation: A Temporal Difference Imitation Learning Perspective*](https://ojs.aaai.org/index.php/AAAI/article/view/40750)).
-The differentiating hypothesis here is the derivative of a raw truncated
-common-mass kernel, with a local-baseline excess contrast and a bounded
-strict-student estimator; its superiority is not established by the
-implementation or by the cited prior work.
+The differentiating hypothesis here is a frozen-compatibility signed visitation
+derivative atop a raw truncated accessibility kernel, with a local-baseline
+excess contrast and a bounded compatibility factor; its superiority is not
+established by the implementation or by the cited prior work.
 
 ## 14. Verification status
 
 After this refinement, the following must pass before a B200 run is trusted:
 
 * support conditionalization sums to one for both `p_U` and `q_U`;
-* finite-difference derivative on a finite support;
+* finite-difference derivative of the frozen-compatibility surrogate on a
+  finite support;
 * raw truncated-kernel estimator identity on synthetic distributions;
 * local-baseline excess derivative finite-difference and full-action enumeration;
 * constant-g length invariance and padding boundary;

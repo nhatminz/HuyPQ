@@ -11,6 +11,7 @@ from b200_experiment.selectors.cmt_selector import (
     kl_constrained_allocation,
     robust_cmt_correction,
 )
+from b200_experiment.diagnostics import selector_summary
 from b200_experiment.selectors.pgt_selector import PGTOutput
 
 
@@ -36,9 +37,7 @@ def _support(
         "gain": gain,
         "s_PGT": gain,
         "gain_support_definition": "student_topk",
-        "transition_support_definition": (
-            "literal_union_student_topk_teacher_topk"
-        ),
+        "transition_support_definition": ("literal_union_student_topk_teacher_topk"),
         "student_support_mass": torch.full_like(gain, student_mass),
         "teacher_support_mass": torch.full_like(gain, teacher_mass),
         "teacher_tail_mass": torch.full_like(gain, 1.0 - teacher_mass),
@@ -217,57 +216,159 @@ def test_cmt_recurrence_uses_local_baseline_excess_opportunity():
     assert torch.allclose(result.scores, gain)
 
 
-def test_directional_formula_matches_finite_difference_on_support():
+def test_soft_signed_effect_survives_when_student_is_slightly_above_teacher():
+    p = torch.log(torch.tensor([[[0.60, 0.40], [0.50, 0.50]]]))
+    q = torch.log(torch.tensor([[[0.59, 0.41], [0.50, 0.50]]]))
+    output = _support(p, q, gain=torch.tensor([[1.0, 2.0]]))
+    result = CMTSelector(gamma=0.75, successor_lambda=1.5).compute_scores(
+        output,
+        torch.tensor([[0, 0]]),
+        torch.ones(1, 2, dtype=torch.bool),
+    )
+    expected_c = torch.tensor(0.59 / 0.60)
+    signed_shift = result.diagnostics["signed_reachability_shift"][0, 0]
+    assert torch.allclose(
+        result.diagnostics["transition_weight"][0, 0], expected_c, atol=1e-6
+    )
+    assert torch.allclose(
+        result.diagnostics["compatibility_weight"][0, 0], expected_c, atol=1e-6
+    )
+    assert signed_shift < 0
+    assert torch.allclose(
+        result.diagnostics["marginal_flux"][0, 0],
+        expected_c * signed_shift,
+        atol=1e-6,
+    )
+    assert result.diagnostics["marginal_flux"][0, 0] != 0
+    assert result.diagnostics["sequential_gain"][0, 0] != 0
+    assert torch.allclose(
+        result.diagnostics["downstream_effect"][0, 0],
+        0.75
+        * result.diagnostics["marginal_flux"][0, 0]
+        * result.diagnostics["successor_excess"][0, 0],
+    )
+    assert torch.allclose(
+        result.diagnostics["sequential_gain"][0, 0],
+        1.5 * result.diagnostics["downstream_effect"][0, 0],
+    )
+    # Kept only as a backward-compatible raw-ratio diagnostic.  It must not
+    # gate the soft signed downstream effect.
+    assert result.diagnostics["teacher_deficit"][0, 0] == 0
+    summary = selector_summary(
+        "cmt",
+        result.diagnostics,
+        torch.ones(1, 2, dtype=torch.bool),
+        torch.ones(1, 2, dtype=torch.bool),
+    )
+    assert summary["marginal_flux_positive_fraction"] == 0.0
+    assert summary["marginal_flux_negative_fraction"] == 0.5
+
+
+def test_soft_signed_effect_has_unit_compatibility_when_student_is_below_teacher():
+    p = torch.log(torch.tensor([[[0.40, 0.60], [0.50, 0.50]]]))
+    q = torch.log(torch.tensor([[[0.60, 0.40], [0.50, 0.50]]]))
+    output = _support(p, q, gain=torch.tensor([[1.0, 2.0]]))
+    result = CMTSelector().compute_scores(
+        output,
+        torch.tensor([[0, 0]]),
+        torch.ones(1, 2, dtype=torch.bool),
+    )
+    assert torch.allclose(
+        result.diagnostics["compatibility_weight"][0, 0], torch.tensor(1.0)
+    )
+    assert torch.allclose(
+        result.diagnostics["marginal_flux"][0, 0],
+        result.diagnostics["signed_reachability_shift"][0, 0],
+    )
+
+
+def test_shift_sign_is_not_inferred_from_raw_teacher_deficit():
+    # Raw p(y)=.8*.4=.32 is above raw q(y)=.4*.7=.28, but within the
+    # conditional support token 0 moves upward relative to the normalized
+    # mean.  The hard teacher-deficit diagnostic is therefore false while the
+    # signed visitation effect is positive.
+    p = torch.log(torch.tensor([[[0.40, 0.60], [0.50, 0.50]]]))
+    q = torch.log(torch.tensor([[[0.70, 0.30], [0.50, 0.50]]]))
+    output = _support(
+        p,
+        q,
+        student_mass=0.8,
+        teacher_mass=0.4,
+        gain=torch.tensor([[1.0, 2.0]]),
+    )
+    result = CMTSelector().compute_scores(
+        output,
+        torch.tensor([[0, 0]]),
+        torch.ones(1, 2, dtype=torch.bool),
+    )
+    assert result.diagnostics["teacher_deficit"][0, 0] == 0
+    assert result.diagnostics["signed_reachability_shift"][0, 0] > 0
+    assert result.diagnostics["marginal_flux"][0, 0] > 0
+    assert torch.allclose(
+        result.diagnostics["compatibility_weight"][0, 0],
+        torch.tensor(0.28 / 0.32),
+        atol=1e-6,
+    )
+
+
+def test_soft_signed_effect_is_attenuated_not_zero_when_student_dominates():
+    p = torch.log(torch.tensor([[[0.90, 0.10], [0.50, 0.50]]]))
+    q = torch.log(torch.tensor([[[0.01, 0.99], [0.50, 0.50]]]))
+    output = _support(p, q, gain=torch.tensor([[1.0, 2.0]]))
+    result = CMTSelector().compute_scores(
+        output,
+        torch.tensor([[0, 0]]),
+        torch.ones(1, 2, dtype=torch.bool),
+    )
+    compatibility = result.diagnostics["compatibility_weight"][0, 0]
+    shift = result.diagnostics["signed_reachability_shift"][0, 0]
+    flux = result.diagnostics["marginal_flux"][0, 0]
+    assert torch.allclose(compatibility, torch.tensor(0.01 / 0.90), atol=1e-6)
+    assert flux != 0
+    assert torch.allclose(flux.abs(), compatibility * shift.abs(), atol=1e-6)
+
+
+def test_soft_signed_effect_is_zero_outside_truncated_support():
+    p = torch.log(torch.tensor([[[0.60, 0.40], [0.50, 0.50]]]))
+    q = torch.log(torch.tensor([[[0.59, 0.41], [0.50, 0.50]]]))
+    ids = torch.tensor([[[10, 11], [10, 11]]])
+    output = _support(p, q, gain=torch.tensor([[1.0, 2.0]]), ids=ids)
+    result = CMTSelector().compute_scores(
+        output,
+        torch.tensor([[99, 10]]),
+        torch.ones(1, 2, dtype=torch.bool),
+    )
+    for key in (
+        "compatibility_weight",
+        "signed_reachability_shift",
+        "marginal_flux",
+        "downstream_effect",
+        "sequential_gain",
+    ):
+        assert result.diagnostics[key][0, 0] == 0
+
+
+def test_frozen_compatibility_directional_formula_matches_finite_difference():
     p = torch.tensor([0.50, 0.30, 0.20], dtype=torch.float64)
     q = torch.tensor([0.20, 0.50, 0.30], dtype=torch.float64)
     child = torch.tensor([0.20, 1.70, 0.90], dtype=torch.float64)
     r = q.log() - p.log()
     mean = (p * r).sum()
-    g = (p * (r - mean).square()).sum()
-    analytic = g + (torch.where(p < q, p * (r - mean), 0.0) * child).sum()
-    eta = 1e-6
-    p_eta = p * torch.exp(eta * r)
-    p_eta /= p_eta.sum()
+    compatibility = torch.minimum(torch.ones_like(p), q / p).detach()
+    analytic = (p * compatibility * (r - mean) * child).sum()
 
-    def divergence(x):
-        return (x * (x.log() - q.log())).sum()
+    def path(eta):
+        value = p * torch.exp(eta * r)
+        return value / value.sum()
 
-    def access(x):
-        return (torch.minimum(x, q) * child).sum()
+    def frozen_compatibility_access(x):
+        return (compatibility * x * child).sum()
 
+    eta = 1e-5
     finite_difference = (
-        divergence(p) - divergence(p_eta) + access(p_eta) - access(p)
-    ) / eta
-    assert torch.allclose(finite_difference, analytic, atol=1e-6)
-
-
-def test_local_baseline_excess_derivative_matches_finite_difference():
-    p = torch.tensor([0.50, 0.30, 0.20], dtype=torch.float64)
-    q = torch.tensor([0.20, 0.50, 0.30], dtype=torch.float64)
-    child_return = torch.tensor([0.20, 1.70, 0.90], dtype=torch.float64)
-    child_mass = torch.tensor([1.20, 0.80, 1.10], dtype=torch.float64)
-    r = q.log() - p.log()
-    mean = (p * r).sum()
-    local_gain = torch.tensor(0.65, dtype=torch.float64)
-    analytic = torch.where(
-        p < q,
-        p * (r - mean) * (child_return - local_gain * child_mass),
-        torch.zeros_like(p),
-    ).sum()
-
-    def excess(x):
-        common = torch.minimum(x, q)
-        return (
-            local_gain
-            + (common * child_return).sum()
-            - local_gain * (1.0 + (common * child_mass).sum())
-        )
-
-    eta = 1e-6
-    p_eta = p * torch.exp(eta * r)
-    p_eta /= p_eta.sum()
-    finite_difference = (excess(p_eta) - excess(p)) / eta
-    assert torch.allclose(finite_difference, analytic, atol=1e-6)
+        frozen_compatibility_access(path(eta)) - frozen_compatibility_access(path(-eta))
+    ) / (2.0 * eta)
+    assert torch.allclose(finite_difference, analytic, atol=1e-9)
 
 
 def test_production_score_is_single_surrogate_derivative():
@@ -278,75 +379,66 @@ def test_production_score_is_single_surrogate_derivative():
     r = q.log() - p.log()
     mean = (p * r).sum()
     local_gain = (p * (r - mean).square()).sum()
-    d_excess = torch.where(
-        p < q,
-        p * (r - mean) * (child_return - local_gain * child_mass),
-        torch.zeros_like(p),
-    ).sum()
+    compatibility = torch.minimum(torch.ones_like(p), q / p).detach()
+    child_excess = child_return - local_gain * child_mass
+    d_excess = (p * compatibility * (r - mean) * child_excess).sum()
     expected = local_gain + d_excess
 
     def objective(x):
         local_improvement = (p * (p.log() - q.log())).sum() - (
             x * (x.log() - q.log())
         ).sum()
-        common = torch.minimum(x, q)
+        compatible_visitation = compatibility * x
         excess = (
             local_gain
-            + (common * child_return).sum()
-            - local_gain * (1.0 + (common * child_mass).sum())
+            + (compatible_visitation * child_return).sum()
+            - local_gain * (1.0 + (compatible_visitation * child_mass).sum())
         )
         return local_improvement + excess
 
-    eta = 1e-6
-    p_eta = p * torch.exp(eta * r)
-    p_eta /= p_eta.sum()
-    finite_difference = (objective(p_eta) - objective(p)) / eta
-    assert torch.allclose(finite_difference, expected, atol=1e-6)
+    eta = 1e-5
+    p_plus = p * torch.exp(eta * r)
+    p_plus /= p_plus.sum()
+    p_minus = p * torch.exp(-eta * r)
+    p_minus /= p_minus.sum()
+    finite_difference = (objective(p_plus) - objective(p_minus)) / (2.0 * eta)
+    assert torch.allclose(finite_difference, expected, atol=1e-9)
 
 
-def test_truncated_sequential_derivative_uses_original_mass_threshold():
+def test_truncated_frozen_compatibility_uses_original_probability_masses():
     p_u = torch.tensor([0.50, 0.30, 0.20], dtype=torch.float64)
     q_u = torch.tensor([0.20, 0.50, 0.30], dtype=torch.float64)
     student_mass = 0.40
     teacher_mass = 0.70
-    child_return = torch.tensor([0.20, 1.70, 0.90], dtype=torch.float64)
-    child_mass = torch.tensor([1.20, 0.80, 1.10], dtype=torch.float64)
-    local_gain = torch.tensor(0.65, dtype=torch.float64)
+    child_excess = torch.tensor([0.20, 1.70, 0.90], dtype=torch.float64)
     r = q_u.log() - p_u.log()
     mean = (p_u * r).sum()
     original_p = student_mass * p_u
     original_q = teacher_mass * q_u
-    analytic = torch.where(
-        original_p < original_q,
-        original_p * (r - mean) * (child_return - local_gain * child_mass),
-        torch.zeros_like(original_p),
-    ).sum()
+    compatibility = torch.minimum(torch.ones_like(original_p), original_q / original_p)
+    analytic = (original_p * compatibility * (r - mean) * child_excess).sum()
 
-    def excess(x):
-        common = torch.minimum(student_mass * x, teacher_mass * q_u)
-        return (
-            local_gain
-            + (common * child_return).sum()
-            - local_gain * (1.0 + (common * child_mass).sum())
-        )
+    def frozen_compatibility_access(x):
+        return (student_mass * compatibility * x * child_excess).sum()
 
-    eta = 1e-6
-    p_eta = p_u * torch.exp(eta * r)
-    p_eta /= p_eta.sum()
-    finite_difference = (excess(p_eta) - excess(p_u)) / eta
-    assert torch.allclose(finite_difference, analytic, atol=1e-6)
+    eta = 1e-5
+    p_plus = p_u * torch.exp(eta * r)
+    p_plus /= p_plus.sum()
+    p_minus = p_u * torch.exp(-eta * r)
+    p_minus /= p_minus.sum()
+    finite_difference = (
+        frozen_compatibility_access(p_plus) - frozen_compatibility_access(p_minus)
+    ) / (2.0 * eta)
+    assert torch.allclose(finite_difference, analytic, atol=1e-9)
 
 
 def test_truncated_excess_estimator_is_unbiased_by_enumeration():
     # Full student probabilities are [.1, .3, .6_tail], while p_U=[.25,.75].
-    # Original teacher masses on U are [.3,.1], so the raw threshold differs
-    # from the conditional threshold: only the first action has p(a)<q(a).
-    # Enumerating all sampled actions recovers the derivative of the truncated,
-    # not conditional, common-mass operator.
+    # Original teacher masses on U are [.3,.1].  Compatibility uses these raw
+    # masses, while direction uses the conditional Student-Top-K tangent.
     p_u = torch.tensor([0.25, 0.75], dtype=torch.float64)
     q_u = torch.tensor([0.75, 0.25], dtype=torch.float64)
     full_p = torch.tensor([0.10, 0.30, 0.60], dtype=torch.float64)
-    full_q = torch.tensor([0.30, 0.10, 0.60], dtype=torch.float64)
     m_p = 0.40
     m_q = 0.40
     child_excess = torch.tensor([2.0, -1.0], dtype=torch.float64)
@@ -354,25 +446,17 @@ def test_truncated_excess_estimator_is_unbiased_by_enumeration():
     mean = (p_u * r).sum()
     original_p = m_p * p_u
     original_q = m_q * q_u
-    original_r = full_q[:2].log() - full_p[:2].log()
+    compatibility = torch.minimum(torch.ones_like(original_p), original_q / original_p)
     sampled = torch.tensor(
         [
-            ((r[0] - mean).item() * child_excess[0].item())
-            if bool(original_r[0] > 0)
-            else 0.0,
-            ((r[1] - mean).item() * child_excess[1].item())
-            if bool(original_r[1] > 0)
-            else 0.0,
+            compatibility[0].item() * (r[0] - mean).item() * child_excess[0].item(),
+            compatibility[1].item() * (r[1] - mean).item() * child_excess[1].item(),
             0.0,
         ],
         dtype=torch.float64,
     )
     enumerated_expectation = (full_p * sampled).sum()
-    exact = torch.where(
-        original_p < original_q,
-        original_p * (r - mean) * child_excess,
-        torch.zeros_like(original_p),
-    ).sum()
+    exact = (original_p * compatibility * (r - mean) * child_excess).sum()
     assert torch.allclose(enumerated_expectation, exact, atol=1e-12)
 
 

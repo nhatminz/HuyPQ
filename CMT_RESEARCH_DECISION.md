@@ -1,8 +1,10 @@
 # Research decision: conditional GO for CMT-OPD
 
 **Superseded formulation note:** this document records the first cumulative/full-
-vocabulary CMT prototype. The support-consistent, length-robust, bounded
-truncated-kernel formulation now used by the code is documented in
+vocabulary CMT prototype. In particular, the hard `p<q` derivative and claims
+that the sequential term is always non-negative below are historical and are
+not production semantics. The current frozen-compatibility, signed-visitation,
+bounded truncated-kernel formulation is documented in
 [`CMT_REFINEMENT_DECISION.md`](CMT_REFINEMENT_DECISION.md).
 
 Ngày 2026-09-06, sau khi audit implementation của `TA-OPD-B200`, kiểm tra
@@ -229,38 +231,36 @@ R_t=g_t+\gamma K R_{t+1},\qquad R_H=0.
 `gamma=1` là default vì response đã finite-horizon; `gamma<1` chỉ là explicit
 time preference/geometric killing, không được giới thiệu như variance fix.
 
-### 6.3 Marginal successor opportunity
+### 6.3 Marginal successor opportunity (current replacement of v1)
 
-Giữ descendants `R(sa)` cố định khi lấy local derivative. Future opportunity tại
-state `s` là `C(s)=K R(s)`. Vì đạo hàm của `min(p_a,q_a)` chỉ khác 0 khi
-`p_a<q_a`, ta có
+Production không differentiate `min(p_a,q_a)` và không dùng hard gate `p_a<q_a`.
+Trên support `U`, compatibility theo raw mass được freeze tại policy hiện tại,
+trong khi dấu đến từ conditional centered shift:
 
 \[
-L_\lambda(s)=g(s)+\lambda\gamma
-\sum_{a:p_a<q_a}p_a(r_a-\bar r)R(sa).
+c(a)=\min(1,q(a)/p(a)),\qquad
+\delta(a)=c(a)(r_U(a)-\bar r_U).
 \]
 
-Term thứ hai chỉ thưởng cho mass mà local teacher-directed update có thể tăng và
-đồng thời successor còn có `R`. Nó không truyền future score qua actions mà
-teacher đã không yêu cầu (các `p_a>q_a` đang bị killed common mass).
+Với `h_t(sa)=R_{t+1}(sa)-g_tM_{t+1}(sa)`, expected downstream derivative là
+
+\[
+D_t=\gamma\sum_{a\in U}p(a)c(a)
+(r_U(a)-\bar r_U)h_t(sa),\qquad
+L_t=g_t+\lambda D_t.
+\]
 
 Trên một student rollout, estimator dùng trong code là
 
 \[
-\widehat L_t=g_t+\lambda\gamma\,
-  1[r(y_t)>0](r(y_t)-\bar r_t)\widehat R_{t+1},
+\widehat D_t=\gamma\mathbf 1\{Y_t\in U_t\}c(Y_t)
+(r_U(Y_t)-\bar r_U)\widehat h_t(sY_t).
 \]
 
-với
-
-\[
-\widehat R_t=g_t+\gamma a_t\widehat R_{t+1}.
-\]
-
-Điều kiện `r(y)>0` tương đương `p_y<q_y`. Với descendants cố định và finite
-horizon, estimator là unbiased cho surrogate `L_lambda` bằng induction. Nó không
-unbiased cho true shared-neural-network parameter update, vì parameter sharing
-và descendant logits thay đổi đồng thời bị bỏ qua.
+Với frozen compatibility và descendants cố định, estimator là unbiased cho
+local categorical visitation surrogate này. Nó không unbiased cho true
+shared-neural-network parameter update, vì parameter sharing và descendant
+logits thay đổi đồng thời bị bỏ qua.
 
 ### 6.4 Allocation policy
 
@@ -307,8 +307,12 @@ for student rollout batch:
     r_t <- log q_t[y_t] - log p_t[y_t]
     a_t <- exp(min(r_t, 0))
     R_t <- g_t + gamma * a_t * R_{t+1}                 # suffix estimator
-    flux_t <- 1[r_t > 0] * (r_t - E_p[r_t])
-    L_t <- g_t + lambda * gamma * flux_t * R_{t+1}
+    M_t <- 1 + gamma * a_t * M_{t+1}
+    c_t <- exp(min(r_t, 0))
+    signed_shift_t <- r_t - E_p[r_t]
+    flux_t <- c_t * signed_shift_t
+    excess_next <- R_{t+1} - g_t * M_{t+1}
+    L_t <- g_t + lambda * gamma * flux_t * excess_next
 
     gather L over all distributed valid tokens
     w <- Gibbs allocation under KL(w || uniform) <= epsilon
@@ -370,9 +374,9 @@ finite checks fail fast. The full-vocabulary score is exact for the scored logit
 but the training loss still uses Top-K union; `teacher_tail_mass` is logged and
 must be stratified in analysis.
 
-The sequential term is always non-negative under this local path (`bar r<=0` and
-`r>0`), so CMT is not a negative-transfer/interference score. `lambda` therefore
-controls downstream emphasis, not signed correction. Near `p=q`, the local term is
+The current sequential term is signed: compatibility is non-negative, while
+direction comes from the centered shift and the successor excess. Therefore it
+can either increase or reduce emphasis. Near `p=q`, the local term is
 second-order while the successor derivative can be higher-order; a large default
 lambda must not be assumed universally optimal.
 
@@ -446,7 +450,7 @@ and all intermediate quantities are logged.
 |---|---|---|
 | Higher | Có một semantics rõ hơn `D*C`: marginal improvement của local OPD cộng accessible successor opportunity | held-out KL reduction và calibration theo score quantile |
 | Faster | Không thêm generation/critic/forward; nhưng full-vocabulary reductions có thể chậm hơn PGT | B200 wall-clock, peak memory và tokens/s; không assume speedup |
-| Stronger | `min(p,q)` có probabilistic meaning và derivative finite-difference kiểm được; không phải causal value | exact tiny-vocab check, shuffled-suffix and parameter-sharing audit |
+| Stronger | `min(p,q)` có probabilistic meaning cho accessibility; frozen compatibility × signed visitation derivative kiểm được bằng finite difference và không phải causal value | exact tiny-vocab check, shuffled-suffix and parameter-sharing audit |
 | Cheaper | Rẻ hơn critic/tree methods, nhưng đắt hơn Top-K-only do `O(BTV)` reductions | score-time breakdown và ablation `lambda=0` |
 | Broader | Áp dụng cho categorical on-policy distillation beyond Qwen3/Competition-MATH | ít nhất một model/data transfer test nếu paper claim generality |
 
@@ -455,9 +459,11 @@ Fatal-flaw audit: (i) common mass/acceptance đã có trong speculative decoding
 maximal coupling; (ii) local greedy coupling không global path-optimal; (iii)
 future term không causal nếu không có alternative continuation; (iv) shared neural
 parameters phá exactness của categorical derivative; (v) Gibbs allocation của
-noisy score bị nonlinear bias; (vi) positive-only successor term không biểu diễn
-negative transfer. Nếu một flaw trong số này quyết định kết quả, phải hạ claim
-hoặc NO-GO chứ không thêm normalization/discount để che lấp.
+noisy score bị nonlinear bias; (vi) positive-only successor term của v1 không
+biểu diễn negative transfer. Nếu một flaw trong số này quyết định kết quả, phải hạ claim
+hoặc NO-GO chứ không thêm normalization/discount để che lấp. Production hiện
+dùng signed downstream correction, không còn positive-only hard-gated term của
+v1.
 
 ## 14. Verification status
 

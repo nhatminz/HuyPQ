@@ -44,6 +44,12 @@ def _cmt_metrics() -> dict:
         transition_weight={"mean": 0.8},
         support_coverage={"mean": 0.9},
         teacher_deficit={"mean": 0.2},
+        signed_reachability_shift={"mean": -0.1},
+        compatibility_weight={"mean": 0.75},
+        marginal_flux={"mean": -0.075},
+        marginal_flux_positive_fraction=0.4,
+        marginal_flux_negative_fraction=0.6,
+        downstream_effect={"mean": -0.03},
         R={"mean": 1.4},
         successor_excess={"mean": 0.15},
         H={"mean": 0.2},
@@ -127,6 +133,8 @@ class TensorBoardMetricTests(unittest.TestCase):
             | {"cmt/effective_token_fraction"},
         )
         self.assertEqual(selected["cmt/common_mass_mean"], 0.8)
+        self.assertEqual(selected["cmt/compatibility_weight_mean"], 0.75)
+        self.assertEqual(selected["cmt/marginal_flux_negative_fraction"], 0.6)
 
     def test_tensorboard_writer_receives_expanded_metrics(self):
         logger = object.__new__(TensorBoardLogger)

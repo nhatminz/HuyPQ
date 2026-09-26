@@ -153,8 +153,10 @@ k_hat_t   = 1[y_t in U_t] * min(1,(m_q*q_U(y_t))/(m_p*p_U(y_t)))
 R_t       = g_t + gamma*k_hat_t*R_{t+1}
 M_t       = 1   + gamma*k_hat_t*M_{t+1}
 H_t       = R_t - g_t*M_t
-flux_t    = 1[y_t in U_t,m_p*p_U(y_t)<m_q*q_U(y_t)] * (r_U(y_t)-E_pU[r_U])
-L_CMT,t   = g_t + lambda * gamma * flux_t * (R_{t+1} - g_t*M_{t+1})
+shift_t   = 1[y_t in U_t] * (r_U(y_t)-E_pU[r_U])
+flux_t    = k_hat_t * shift_t
+D_t       = gamma * flux_t * (R_{t+1} - g_t*M_{t+1})
+L_CMT,t   = g_t + lambda * D_t
 w         = Gibbs(L_CMT; KL(w || uniform) <= epsilon)
 ```
 
@@ -164,6 +166,9 @@ w         = Gibbs(L_CMT; KL(w || uniform) <= epsilon)
 scored student distribution; `top_p=1` là cấu hình exact khuyến nghị nhưng không còn là hard startup
 requirement. Với `top_p<1`, factor vẫn bounded nhưng không còn unbiased cho kernel này; launcher chỉ
 cảnh báo và không áp dụng importance correction không hợp lệ.
+Trong downstream derivative, `k_hat_t` được **freeze** như compatibility/confidence
+weight. Dấu của tác động đến từ centered shift `r_U(y_t)-E_pU[r_U]`; diagnostic
+`teacher_deficit` không gate `D_t`, nên downstream effect có thể âm hoặc dương.
 Đây là local conditional accessibility surrogate, không phải task value hay causal credit. Xem
 [`CMT_REFINEMENT_DECISION.md`](CMT_REFINEMENT_DECISION.md) cho derivation và falsification matrix.
 

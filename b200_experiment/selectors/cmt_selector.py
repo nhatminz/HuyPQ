@@ -503,10 +503,12 @@ class CMTSelector:
         E_t = R_t - g_t M_t
             = gamma * K_tilde (R_{t+1} - g_t M_{t+1}),
 
-    and the current-action derivative uses the successor contrast
+    and the current-action effect uses the successor contrast
     ``R_{t+1} - g_t M_{t+1}``.  This baseline is the current state's own
-    Student-Top-K local value, so constant-gain suffixes cancel exactly while
-    the one-rollout derivative remains unbiased under frozen descendants.
+    Student-Top-K local value, so constant-gain suffixes cancel exactly.  The
+    common-support overlap is retained as a frozen compatibility weight, while
+    the directional factor is the signed first-order change in student
+    visitation probability under the teacher-directed perturbation.
     With ``successor_lambda=1``, ``g_t + D_t`` is the derivative of a single
     frozen-descendant surrogate consisting of local reverse-KL improvement plus
     the baseline-subtracted successor opportunity; lambda=0 is only a named
@@ -633,23 +635,30 @@ class CMTSelector:
         coverage_correction = torch.where(
             in_support, torch.ones_like(student_mass), torch.zeros_like(student_mass)
         )
-        # The active branch of min(p(a), q(a)) is determined by original mass,
-        # not by conditional p_U/q_U.  The tangent itself remains the local
-        # conditional mirror tangent p_U * (r_U - E_pU[r_U]).
+        # Backward-compatible diagnostic only: the production downstream term
+        # is no longer gated by this raw teacher-deficit indicator.
         teacher_deficit = in_support & sampled_r.gt(0.0)
-        marginal_flux = torch.where(
-            teacher_deficit,
+        signed_reachability_shift = torch.where(
+            in_support,
             sampled_cond_r - mean_r,
             torch.zeros_like(sampled_cond_r),
         )
+        # Freeze the raw common-support compatibility c_t at eta=0.  Direction
+        # comes only from the centered conditional mirror tangent above; c_t is
+        # a bounded confidence factor, not a differentiated min(p_eta, q).
+        compatibility_weight = acceptance
+        marginal_flux = compatibility_weight * signed_reachability_shift
 
-        # This is the part that can be Rao-Blackwellized with no successor
-        # evaluations.  The action-conditioned future term cannot be summed
-        # over U without evaluating those counterfactual successors.
+        # Support-level overlap diagnostics can be summed exactly with no
+        # successor evaluations.  The production action-conditioned future
+        # term cannot be summed over U without evaluating counterfactual
+        # successors.
         support_common_mass = torch.minimum(original_p, original_q).sum(dim=-1)
         conditional_support_common_mass = torch.minimum(support_p, support_q).sum(
             dim=-1
         )
+        # Historical exact derivative of raw common mass.  It remains useful
+        # for audit comparisons but does not enter marginal_flux or D_t.
         common_mass_derivative = torch.where(
             support_mask & original_p.lt(original_q),
             original_p * (support_r - mean_r.unsqueeze(-1)),
@@ -696,9 +705,8 @@ class CMTSelector:
             successor_excess / (successor_mass + 1e-8),
             torch.zeros_like(successor_excess),
         )
-        sequential_gain = (
-            self.successor_lambda * self.gamma * marginal_flux * successor_excess
-        )
+        downstream_effect = self.gamma * marginal_flux * successor_excess
+        sequential_gain = self.successor_lambda * downstream_effect
         canonical_learning_value = torch.where(
             valid, g + sequential_gain, torch.zeros_like(g)
         )
@@ -756,7 +764,10 @@ class CMTSelector:
                 torch.zeros_like(conditional_support_common_mass),
             ),
             teacher_deficit=teacher_deficit.float(),
+            signed_reachability_shift=signed_reachability_shift,
+            compatibility_weight=compatibility_weight,
             marginal_flux=marginal_flux,
+            downstream_effect=downstream_effect,
             common_mass_derivative=common_mass_derivative,
             R=cumulative_return,
             M=masses,
@@ -799,6 +810,8 @@ class CMTSelector:
             original_r,
             acceptance,
             transition_weight,
+            signed_reachability_shift,
+            compatibility_weight,
             marginal_flux,
             cumulative_return,
             masses,
@@ -809,6 +822,7 @@ class CMTSelector:
             successor_value,
             successor_excess,
             successor_excess_average,
+            downstream_effect,
             sequential_gain,
             canonical_learning_value,
             learning_value,

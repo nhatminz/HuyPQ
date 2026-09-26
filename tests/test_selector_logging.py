@@ -92,7 +92,10 @@ class SelectorLoggingTests(unittest.TestCase):
                 "transition_weight",
                 "support_coverage",
                 "teacher_deficit",
+                "signed_reachability_shift",
+                "compatibility_weight",
                 "marginal_flux",
+                "downstream_effect",
                 "successor_excess",
                 "sequential_gain",
                 "learning_value",
@@ -116,6 +119,7 @@ class SelectorLoggingTests(unittest.TestCase):
                 row = json.loads(next(handle))
             self.assertEqual(row["token_text"], "tok-5")
             self.assertEqual(row["transition_weight"], 1.0)
+            self.assertEqual(row["compatibility_weight"], 1.0)
             self.assertEqual(row["conditional_support_common_mass"], 1.0)
 
     def test_compact_rac_stats_cover_all_values_and_bound_raw_sample(self):
@@ -155,7 +159,10 @@ class SelectorLoggingTests(unittest.TestCase):
                 "support_coverage",
                 "coverage_correction",
                 "teacher_deficit",
+                "signed_reachability_shift",
+                "compatibility_weight",
                 "marginal_flux",
+                "downstream_effect",
                 "common_mass_derivative",
                 "R",
                 "M",
@@ -200,6 +207,9 @@ class SelectorLoggingTests(unittest.TestCase):
                         "successor_value",
                         "successor_excess_total",
                         "successor_excess_average",
+                        "signed_reachability_shift",
+                        "compatibility_weight",
+                        "downstream_effect",
                         "sequential_gain",
                         "sequential_gain_raw",
                         "sequential_gain_robust",

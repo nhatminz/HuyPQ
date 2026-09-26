@@ -117,7 +117,10 @@ def selector_summary(
             "support_coverage",
             "coverage_correction",
             "teacher_deficit",
+            "signed_reachability_shift",
+            "compatibility_weight",
             "marginal_flux",
+            "downstream_effect",
             "common_mass_derivative",
             "R",
             "M",
@@ -156,6 +159,19 @@ def selector_summary(
         value = diagnostics.get(key)
         if torch.is_tensor(value):
             result[key] = tensor_summary(value, valid_mask)
+    if method == "cmt" and torch.is_tensor(diagnostics.get("marginal_flux")):
+        flux = diagnostics["marginal_flux"][valid_mask].detach().float()
+        finite_flux = flux[torch.isfinite(flux)]
+        if finite_flux.numel():
+            result["marginal_flux_positive_fraction"] = float(
+                finite_flux.gt(0).float().mean()
+            )
+            result["marginal_flux_negative_fraction"] = float(
+                finite_flux.lt(0).float().mean()
+            )
+        else:
+            result["marginal_flux_positive_fraction"] = float("nan")
+            result["marginal_flux_negative_fraction"] = float("nan")
     valid_count = int(valid_mask.sum().item())
     selected_count = int(selected.sum().item())
     result.update(
